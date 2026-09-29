@@ -1,5 +1,5 @@
 const FileType = require('file-type');
-const { postStory, remuxVideo, compressVideo, audienceSize } = require('./story');
+const { postStory, remuxVideo, compressVideo, enhanceVideo, audienceSize } = require('./story');
 
 const IMAGE_OK = ['image/jpeg', 'image/png', 'image/webp'];
 const mb = (n) => (n / 1024 / 1024).toFixed(2) + ' MB';
@@ -17,13 +17,13 @@ const handleStoryUpload = async (sock, m, { quoted, mime, text, reply, prefix, c
     // the real type is detected from the file content below.
     if (!['imageMessage', 'videoMessage', 'documentMessage'].includes(mtype) || (!declared && !isDoc)) {
         return reply(
-            `*Post to story (${forceCompress ? 'compressed video' : 'original quality'})*\n\n` +
+            `*Post to story (${forceCompress ? 'compressed video' : 'HD video, same file size'})*\n\n` +
             `1. Send the photo/video as a *Document* (attach > Document) with caption ${prefix}${cmd}\n` +
             `   or reply to it with ${prefix}${cmd}\n` +
             `2. Optional caption: ${prefix}${cmd} your caption\n\n` +
             `Normal photos/videos are already compressed by WhatsApp before they reach the bot. ` +
             `Documents keep the original file.\n\n` +
-            `${forceCompress ? `${prefix}sw` : `${prefix}swc`} is also available if you want ${forceCompress ? 'the original, uncompressed' : 'a compressed'} video instead.\n\n` +
+            `${forceCompress ? `${prefix}sw` : `${prefix}swc`} is also available if you want ${forceCompress ? 'the HD, same-size' : 'a compressed'} video instead.\n\n` +
             `Story audience: ${audienceSize()} contacts (+ you)`
         );
     }
@@ -71,6 +71,7 @@ const handleStoryUpload = async (sock, m, { quoted, mime, text, reply, prefix, c
         // kept at original quality, only remuxed to mp4 if needed (.sw).
         let out = buffer;
         let outMime = mimetype;
+        let hdInfo = null;
         if (isVideo) {
             const c = config.story?.compress || {};
             try {
@@ -81,10 +82,23 @@ const handleStoryUpload = async (sock, m, { quoted, mime, text, reply, prefix, c
                         out = small;
                         outMime = 'video/mp4';
                     } // else: already smaller than the re-encode, keep the original
-                } else if (mimetype !== 'video/mp4') {
-                    await reply(`Converting ${mimetype.split('/')[1]} to mp4 (no re-encode)...`);
-                    out = await remuxVideo(buffer);
-                    outMime = 'video/mp4';
+                } else {
+                    // .sw: upscale to HD at the same file size (skipped if already HD or disabled)
+                    const hdCfg = config.story?.hd || {};
+                    let hd = null;
+                    if (hdCfg.enabled !== false) {
+                        await reply(`Upgrading video to HD (${mb(buffer.length)}, keeping the file size). This can take a few minutes...`);
+                        hd = await enhanceVideo(buffer, hdCfg);
+                    }
+                    if (hd) {
+                        out = hd.buffer;
+                        outMime = 'video/mp4';
+                        hdInfo = `HD ${hd.from} -> ${hd.width}x${hd.height}`;
+                    } else if (mimetype !== 'video/mp4') {
+                        await reply(`Converting ${mimetype.split('/')[1]} to mp4 (no re-encode)...`);
+                        out = await remuxVideo(buffer);
+                        outMime = 'video/mp4';
+                    }
                 }
             } catch (e) {
                 console.log(e);
@@ -95,7 +109,7 @@ const handleStoryUpload = async (sock, m, { quoted, mime, text, reply, prefix, c
         await reply(`Uploading to story (${mb(out.length)}${out !== buffer ? `, was ${mb(buffer.length)}` : ''})...`);
         const { recipients } = await postStory(sock, { buffer: out, mimetype: outMime, caption: text });
 
-        await reply(`Story posted (${isVideo ? 'video, full length' : 'image'}, ${mb(out.length)}, ${out !== buffer ? 'compressed, same resolution' : 'original'}, ${recipients} recipients)`);
+        await reply(`Story posted (${isVideo ? 'video, full length' : 'image'}, ${mb(out.length)}, ${hdInfo || (out !== buffer ? 'compressed, same resolution' : 'original')}, ${recipients} recipients)`);
     } catch (e) {
         console.log(e);
         await reply(`Failed: ${e.message || e}`);
