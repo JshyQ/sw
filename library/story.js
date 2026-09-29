@@ -38,11 +38,24 @@ const savePosted = () => {
 
 const recordPosted = (key) => {
     if (!key || !key.id) return;
+    if (posted.some((e) => e.id === key.id)) return; // dedupe (bot post + upsert echo, etc.)
     posted.push({ id: key.id, participant: key.participant || null, timestamp: Date.now() });
     savePosted();
 };
 
 const listPosted = () => [...posted];
+
+// Catches stories posted from ANY device on this account (phone, WhatsApp Web, another bot
+// session...) while this bot is connected, plus any recent ones replayed during the initial
+// history sync on login. WhatsApp has no API to list "my currently active stories" on demand,
+// so this passive capture is the only way to know what's deletable later via delstory.
+const trackAllOwnStories = (sock) => {
+    const capture = (msg) => {
+        if (msg?.key?.remoteJid === 'status@broadcast' && msg.key.fromMe) recordPosted(msg.key);
+    };
+    sock.ev.on('messages.upsert', ({ messages = [] }) => messages.forEach(capture));
+    sock.ev.on('messaging-history.set', ({ messages = [] }) => messages.forEach(capture));
+};
 
 // accepts "6285..@s.whatsapp.net", "6285..:12@s.whatsapp.net" or bare digits
 const toPnJid = (v) => {
@@ -68,6 +81,8 @@ const bind = (sock) => {
     sock.ev.on('messaging-history.set', ({ contacts = [] }) => contacts.forEach(addContact));
     sock.ev.on('contacts.upsert', (list) => list.forEach(addContact));
     sock.ev.on('contacts.update', (list) => list.forEach(addContact));
+
+    trackAllOwnStories(sock);
 
     if (config().story?.includeChatPartners) {
         sock.ev.on('messages.upsert', ({ messages }) => {
