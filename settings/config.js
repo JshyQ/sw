@@ -49,6 +49,17 @@ const config = {
             audioKbps: 96,
             maxFps: 60        // 0 = keep original fps; e.g. 60 to cap 120fps videos (much smaller)
         },
+        hd: {
+            enabled: true,        // .sw upscales videos to HD while keeping the file size about the same
+            targetShortSide: 1080, // short side in pixels (1080 = Full HD, 720 = HD). Videos already this size or bigger are left untouched
+            preset: 'slow',       // slower = better quality per MB (veryfast, medium, slow, slower)
+            sharpen: 0.6,         // 0 = off, 0.3-1.0 = light to strong sharpening after upscaling
+            denoise: true,        // remove noise first so the bitrate is spent on real detail
+            audioKbps: 128,
+            maxFps: 60,           // 0 = keep original fps
+            twoPass: true,        // more accurate file size, takes about twice as long
+            sizeTolerance: 1.08   // if the result is bigger than original x this, the original is posted instead
+        },
         ffmpegPath: '', // optional: full path to your ffmpeg binary (leave empty to auto-detect)
         videoSegmentSeconds: 30, // videos longer than this are split into consecutive story parts (raise to 60/90 if your WhatsApp allows it)
         includeChatPartners: false // true = also show stories to people you chat with (not only contacts)
