@@ -1,4 +1,3 @@
-
 // 漏 2025 Debraj. All Rights Reserved.
 // respect the work, don鈥檛 just copy-paste.
 
@@ -43,6 +42,8 @@ const config = {
         apikey: "hector"
     },
     story: {
+        ffmpegPath: '', // optional: full path to your ffmpeg binary (leave empty to auto-detect)
+        videoSegmentSeconds: 30, // videos longer than this are split into consecutive story parts (raise to 60/90 if your WhatsApp allows it)
         includeChatPartners: false // true = also show stories to people you chat with (not only contacts)
     },
     sticker: {
