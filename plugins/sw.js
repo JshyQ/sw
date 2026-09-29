@@ -1,5 +1,5 @@
 const FileType = require('file-type');
-const { postStory, remuxVideo, audienceSize } = require('../library/story');
+const { postStory, remuxVideo, compressVideo, audienceSize } = require('../library/story');
 
 const IMAGE_OK = ['image/jpeg', 'image/png', 'image/webp'];
 const mb = (n) => (n / 1024 / 1024).toFixed(2) + ' MB';
@@ -67,25 +67,36 @@ module.exports = {
                 return reply(`Unsupported image type (${mimetype}). Use JPG, PNG or WEBP.`);
             }
 
-            // Videos are posted as ONE file: full length, original resolution, never split or re-encoded.
-            // Only non-mp4 containers (mov, mkv...) are rewrapped into mp4 (stream copy, no quality loss).
+            // Videos are posted as ONE file: full length, original resolution (never scaled or split).
+            // With story.compress.enabled (default) the video is re-encoded to a much smaller mp4.
             let out = buffer;
             let outMime = mimetype;
-            if (isVideo && mimetype !== 'video/mp4') {
-                await reply(`Converting ${mimetype.split('/')[1]} to mp4 (no re-encode, ${mb(buffer.length)})...`);
+            if (isVideo) {
+                const c = config.story?.compress || {};
+                const compress = c.enabled !== false; // on by default
                 try {
-                    out = await remuxVideo(buffer);
-                    outMime = 'video/mp4';
+                    if (compress) {
+                        await reply(`Compressing video (${mb(buffer.length)}), same resolution. This can take several minutes...`);
+                        const small = await compressVideo(buffer, c);
+                        if (small.length < buffer.length || mimetype !== 'video/mp4') {
+                            out = small;
+                            outMime = 'video/mp4';
+                        } // else: already smaller than the re-encode, keep the original
+                    } else if (mimetype !== 'video/mp4') {
+                        await reply(`Converting ${mimetype.split('/')[1]} to mp4 (no re-encode)...`);
+                        out = await remuxVideo(buffer);
+                        outMime = 'video/mp4';
+                    }
                 } catch (e) {
                     console.log(e);
-                    return reply(`Could not convert the video. Nothing was posted.\nReason: ${e.message || e}`);
+                    return reply(`Could not process the video. Nothing was posted.\nReason: ${e.message || e}`);
                 }
             }
 
-            await reply(`Uploading to story (${mb(out.length)})...`);
+            await reply(`Uploading to story (${mb(out.length)}${out !== buffer ? `, was ${mb(buffer.length)}` : ''})...`);
             const { recipients } = await postStory(sock, { buffer: out, mimetype: outMime, caption: text });
 
-            await reply(`Story posted (${isVideo ? 'video, full length' : 'image'}, ${mb(out.length)}, original quality, ${recipients} recipients)`);
+            await reply(`Story posted (${isVideo ? 'video, full length' : 'image'}, ${mb(out.length)}, ${out !== buffer ? 'compressed, same resolution' : 'original'}, ${recipients} recipients)`);
         } catch (e) {
             console.log(e);
             await reply(`Failed: ${e.message || e}`);
