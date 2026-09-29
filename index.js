@@ -82,7 +82,7 @@ const clientstart = async() => {
         console.log(chalk.green(`your pairing code: ` + chalk.bold.green(code)));
     }
     
-    store.bind(sock);
+    store.bind(sock.ev);
     story.bind(sock);
     
     const lidMapping = sock.signalRepository.lidMapping;
