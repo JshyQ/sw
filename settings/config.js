@@ -29,9 +29,9 @@ const config = {
     settings: {
         title: "Simple WA Base Bot",
         packname: 'WA-BASE',
-        description: "this script was created by Debraj",
-        author: 'https://www.github.com/OfficialKango',
-        footer: "饾棈饾柧饾梾饾柧饾梹饾棆饾柡饾梿: @official_kango"
+        description: "this script was created by JoQ",
+        author: 'JoQ',
+        footer: "CATS!"
     },
     newsletter: {
         name: "Simple WA Base Bot",
@@ -47,15 +47,15 @@ const config = {
             crf: 32,         // higher = smaller file, lower quality (26 = good, 32 = small, 36 = very small)
             preset: 'medium', // slower = smaller file (fast, medium, slow, slower)
             audioKbps: 96,
-            maxFps: 0        // 0 = keep original fps; e.g. 60 to cap 120fps videos (much smaller)
+            maxFps: 60        // 0 = keep original fps; e.g. 60 to cap 120fps videos (much smaller)
         },
         ffmpegPath: '', // optional: full path to your ffmpeg binary (leave empty to auto-detect)
         videoSegmentSeconds: 30, // videos longer than this are split into consecutive story parts (raise to 60/90 if your WhatsApp allows it)
         includeChatPartners: false // true = also show stories to people you chat with (not only contacts)
     },
     sticker: {
-        packname: "Simple WA Base Bot",
-        author: "WA-BASE"
+        packname: "Joshy",
+        author: "JoQ"
     }
 }
 
