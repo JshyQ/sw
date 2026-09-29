@@ -8,7 +8,7 @@ module.exports = {
     execute: async (sock, m, { reply }) => {
         const pending = listPosted().length;
         if (pending === 0) {
-            return reply('No tracked stories to delete. (Only stories posted with .sw through this bot are tracked — stories posted from your phone directly aren\'t.)');
+            return reply('No tracked stories to delete. This only catches stories posted while the bot was online (from any device) — WhatsApp has no way to look up older ones after the fact.');
         }
 
         await reply(`Deleting ${pending} story${pending === 1 ? '' : 'ies'}...`);
