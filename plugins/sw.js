@@ -82,7 +82,7 @@ module.exports = {
                         if (split.length > 1 || needRemux) { parts = split; partMime = 'video/mp4'; }
                     } catch (e) {
                         console.log(e);
-                        return reply('Could not process the video (is ffmpeg installed?). Nothing was posted.');
+                        return reply(`Could not process the video. Nothing was posted.\nReason: ${e.message || e}`);
                     }
                 }
             }
