@@ -109,6 +109,33 @@ const splitVideo = async (buffer, segmentSeconds) => {
     }
 };
 
+// Convert any video container (mov, mkv...) to ONE mp4 WITHOUT re-encoding:
+// full length, same resolution, same quality (stream copy).
+const remuxVideo = async (buffer) => {
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'story-'));
+    const input = path.join(dir, 'input.bin');
+    const output = path.join(dir, 'output.mp4');
+    try {
+        await fs.promises.writeFile(input, buffer);
+        await new Promise((resolve, reject) => {
+            const p = spawn(ffmpegPath(), [
+                '-y', '-i', input,
+                '-map', '0:v:0', '-map', '0:a?',
+                '-c', 'copy',
+                '-movflags', '+faststart',
+                output
+            ]);
+            let err = '';
+            p.stderr.on('data', (d) => (err += d));
+            p.on('error', reject);
+            p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited with code ${code}: ` + err.trim().split('\n').slice(-4).join(' | ').slice(-400)))));
+        });
+        return await fs.promises.readFile(output);
+    } finally {
+        fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+};
+
 const ownJid = (sock) => sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
 
 const getAudience = (sock) => [...new Set([ownJid(sock), ...audience])];
@@ -124,4 +151,4 @@ const postStory = async (sock, { buffer, mimetype, caption }) => {
     return { recipients: statusJidList.length };
 };
 
-module.exports = { bind, add, getAudience, postStory, splitVideo, audienceSize: () => audience.size };
+module.exports = { bind, add, getAudience, postStory, splitVideo, remuxVideo, audienceSize: () => audience.size };
