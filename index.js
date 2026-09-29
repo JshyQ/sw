@@ -6,7 +6,6 @@ let makeWASocket, Browsers, useMultiFileAuthState, DisconnectReason, fetchLatest
 
 const loadBaileys = async () => {
   const baileys = await import('@whiskeysockets/baileys');
-  
   makeWASocket = baileys.default;
   Browsers = baileys.Browsers;
   useMultiFileAuthState = baileys.useMultiFileAuthState;
@@ -35,15 +34,9 @@ const listcolor = ['cyan', 'magenta', 'green', 'yellow', 'blue'];
 const randomcolor = listcolor[Math.floor(Math.random() * listcolor.length)];
 
 const question = (text) => {
-    const rl = readline.createInterface({
-        input: process.stdin,
-        output: process.stdout
-    });
-    return new Promise((resolve) => {
-        rl.question(chalk.yellow(text), (answer) => {
-            resolve(answer);
-            rl.close();
-        });
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    return new Promise(resolve => {
+        rl.question(chalk.yellow(text), answer => { resolve(answer); rl.close(); });
     });
 };
 
@@ -51,34 +44,24 @@ const clientstart = async() => {
     await loadBaileys();
     
     const browserOptions = [
-        Browsers.macOS('Safari'),
-        Browsers.macOS('Chrome'),
-        Browsers.windows('Firefox'),
-        Browsers.ubuntu('Chrome'),
-        Browsers.baileys('Baileys'),
-        Browsers.macOS('Edge'),
-        Browsers.windows('Edge'),
+        Browsers.macOS('Safari'), Browsers.macOS('Chrome'), Browsers.windows('Firefox'),
+        Browsers.ubuntu('Chrome'), Browsers.baileys('Baileys'), Browsers.macOS('Edge'),
+        Browsers.windows('Edge')
     ];
-    
     const randomBrowser = browserOptions[Math.floor(Math.random() * browserOptions.length)];
     
     const store = {
         messages: new Map(),
         contacts: new Map(),
         groupMetadata: new Map(),
-        loadMessage: async (jid, id) => store.messages.get(`${jid}:${id}`) || null,
+        loadMessage: (jid, id) => store.messages.get(`${jid}:${id}`) || null,
         bind: (ev) => {
             ev.on('messages.upsert', ({ messages }) => {
                 for (const msg of messages) {
-                    if (msg.key?.remoteJid && msg.key?.id) {
-                        store.messages.set(`${msg.key.remoteJid}:${msg.key.id}`, msg);
-                    }
+                    if (msg.key?.remoteJid && msg.key?.id) store.messages.set(`${msg.key.remoteJid}:${msg.key.id}`, msg);
                 }
             });
-            
-            ev.on('lid-mapping.update', ({ mappings }) => {
-                console.log(chalk.cyan('📋 LID Mapping Update:'), mappings);
-            });
+            ev.on('lid-mapping.update', ({ mappings }) => console.log(chalk.cyan('📋 LID Mapping Update:'), mappings));
         }
     };
     
@@ -99,116 +82,67 @@ const clientstart = async() => {
         console.log(chalk.green(`your pairing code: ` + chalk.bold.green(code)));
     }
     
-    store.bind(sock.ev);
+    store.bind(sock);
     story.bind(sock);
     
     const lidMapping = sock.signalRepository.lidMapping;
     
     sock.getLIDForPN = async (phoneNumber) => {
-        try {
-            const lid = await lidMapping.getLIDForPN(phoneNumber);
-            return lid;
-        } catch (error) {
-            console.log('No LID found for PN:', phoneNumber);
-            return null;
-        }
+        try { return await lidMapping.getLIDForPN(phoneNumber); } catch {}
+        return null;
     };
-    
     sock.getPNForLID = async (lid) => {
-        try {
-            const pn = await lidMapping.getPNForLID(lid);
-            return pn;
-        } catch (error) {
-            console.log('No PN found for LID:', lid);
-            return null;
-        }
+        try { return await lidMapping.getPNForLID(lid); } catch {}
+        return null;
     };
-    
     sock.storeLIDPNMapping = async (lid, phoneNumber) => {
         try {
             await lidMapping.storeLIDPNMapping(lid, phoneNumber);
             console.log(chalk.green(`✓ Stored LID<->PN mapping: ${lid} <-> ${phoneNumber}`));
-        } catch (error) {
-            console.log('Error storing LID/PN mapping:', error);
-        }
+        } catch {}
     };
     
     sock.ev.on('creds.update', saveCreds);
-    
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
-        
-        if (connection === 'connecting') {
-            console.log(chalk.yellow('🔄 Connecting to WhatsApp...'));
-        }
-        
+        if (connection === 'connecting') console.log(chalk.yellow('🔄 Connecting to WhatsApp...'));
         if (connection === 'open') {
             console.log(chalk.green('✅ Connected to WhatsApp successfully!'));
-            
-            // Tell the owner the bot is online
             sock.sendMessage(config().owner + '@s.whatsapp.net', {
-                text:
-                    `✅ *${config().settings.title}* is online\n` +
-                    `> 🔒 Mode: Owner only (+${config().owner})\n` +
-                    `> 📸 Story: send a photo/video as *Document* with caption .sw`
+                text: `✅ *${config().settings.title}* is online\n> 🔒 Mode: Owner only (+${config().owner})\n> 📸 Story: send a photo/video as *Document* with caption .sw`
             }).catch(console.error);
         }
-        
-        if (connection === 'close') {
-            // Reconnecting is handled ONLY by library/connection/connection.js (konek, called below).
-            // Doing it here too opened two sockets on the same login -> "conflict / replaced".
-            console.log(chalk.red('❌ Connection closed:'), lastDisconnect?.error?.message);
-        }
-        
-        if (qr) {
-            console.log(chalk.blue('📱 Scan the QR code above to connect.'));
-        }
+        if (connection === 'close') console.log(chalk.red('❌ Connection closed:'), lastDisconnect?.error?.message);
+        if (qr) console.log(chalk.blue('📱 Scan the QR code above to connect.'));
         
         const { konek } = require('./library/connection/connection');
-        konek({
-            sock, 
-            update, 
-            clientstart, 
-            DisconnectReason, 
-            Boom
-        });
+        konek({ sock, update, clientstart, DisconnectReason, Boom });
     });
 
     sock.ev.on('messages.upsert', async chatUpdate => {
         try {
             const mek = chatUpdate.messages[0];
             if (!mek.message) return;
-            
-            mek.message = Object.keys(mek.message)[0] === 'ephemeralMessage' 
-                ? mek.message.ephemeralMessage.message 
-                : mek.message;
+            mek.message = Object.keys(mek.message)[0] === 'ephemeralMessage' ? mek.message.ephemeralMessage.message : mek.message;
             
             if (config().status.reactsw && mek.key && mek.key.remoteJid === 'status@broadcast') {
                 let emoji = ['😘', '😭', '😂', '😹', '😍', '😋', '🙏', '😜', '😢', '😠', '🤫', '😎'];
                 let sigma = emoji[Math.floor(Math.random() * emoji.length)];
                 await sock.readMessages([mek.key]);
-                await sock.sendMessage('status@broadcast', { 
-                    react: { 
-                        text: sigma, 
-                        key: mek.key 
-                    }
-                }, { statusJidList: [mek.key.participant] });
+                await sock.sendMessage('status@broadcast', { react: { text: sigma, key: mek.key } }, { statusJidList: [mek.key.participant] });
             }
             
-            // ---- OWNER ONLY ----
             if (chatUpdate.type !== 'notify') return;
             if (mek.key.remoteJid === 'status@broadcast') return;
             const ageSec = Date.now() / 1000 - Number(mek.messageTimestamp || 0);
-            if (ageSec > 180) return; // ignore old / replayed messages (avoids re-posting stories on restart)
-            if (!(await isOwnerMessage(sock, mek))) return; // silent for everyone else
+            if (ageSec > 180) return;
+            if (!(await isOwnerMessage(sock, mek))) return;
             if (mek.key.id.startsWith('BASE-') && mek.key.id.length === 12) return;
             
             const m = await smsg(sock, mek, store);
             m.isOwner = true;
             require("./message")(sock, m, chatUpdate, store);
-        } catch (err) {
-            console.log(err);
-        }
+        } catch (err) { console.log(err); }
     });
 
     sock.decodeJid = (jid) => {
@@ -222,55 +156,26 @@ const clientstart = async() => {
     sock.ev.on('contacts.update', update => {
         for (let contact of update) {
             let id = contact.id;
-            if (store && store.contacts) {
-                store.contacts.set(id, {
-                    id: id,
-                    lid: contact.lid || null,
-                    phoneNumber: contact.phoneNumber || null,
-                    name: contact.notify || contact.name || null
-                });
-            }
+            if (store.contacts) store.contacts.set(id, { id, lid: contact.lid || null, phoneNumber: contact.phoneNumber || null, name: contact.notify || contact.name || null });
         }
     });
 
-    sock.public = false; // owner-only, never public
+    sock.public = false;
     
-    sock.sendText = async (jid, text, quoted = '', options) => {
-        return sock.sendMessage(jid, {
-            text: text,
-            ...options
-        }, { quoted });
-    };
-    
+    sock.sendText = async (jid, text, quoted = '', options) => sock.sendMessage(jid, { text, ...options }, { quoted });
     sock.downloadMediaMessage = async (message) => {
         let mime = (message.msg || message).mimetype || '';
         let messageType = message.mtype ? message.mtype.replace(/Message/gi, '') : mime.split('/')[0];
         const stream = await downloadContentFromMessage(message, messageType);
         let buffer = Buffer.from([]);
-        for await(const chunk of stream) {
-            buffer = Buffer.concat([buffer, chunk]);
-        }
+        for await(const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
         return buffer;
     };
 
     sock.sendImageAsSticker = async (jid, path, quoted, options = {}) => {
-        let buff = Buffer.isBuffer(path) ? 
-            path : /^data:.*?\/.*?;base64,/i.test(path) ?
-            Buffer.from(path.split`,`[1], 'base64') : /^https?:\/\//.test(path) ?
-            await (await getBuffer(path)) : fs.existsSync(path) ? 
-            fs.readFileSync(path) : Buffer.alloc(0);
-        
-        let buffer;
-        if (options && (options.packname || options.author)) {
-            buffer = await writeExifImg(buff, options);
-        } else {
-            buffer = await addExif(buff);
-        }
-        
-        await sock.sendMessage(jid, { 
-            sticker: { url: buffer }, 
-            ...options 
-        }, { quoted });
+        let buff = Buffer.isBuffer(path) ? path : /^data:.*?\/.*?;base64,/i.test(path) ? Buffer.from(path.split`,`[1], 'base64') : /^https?:\/\//.test(path) ? await (await getBuffer(path)) : fs.existsSync(path) ? fs.readFileSync(path) : Buffer.alloc(0);
+        let buffer = (options && (options.packname || options.author)) ? await writeExifImg(buff, options) : await addExif(buff);
+        await sock.sendMessage(jid, { sticker: { url: buffer }, ...options }, { quoted });
         return buffer;
     };
     
@@ -278,91 +183,42 @@ const clientstart = async() => {
         let quoted = message.msg ? message.msg : message;
         let mime = (message.msg || message).mimetype || "";
         let messageType = message.mtype ? message.mtype.replace(/Message/gi, "") : mime.split("/")[0];
-
         const stream = await downloadContentFromMessage(quoted, messageType);
         let buffer = Buffer.from([]);
-        for await (const chunk of stream) {
-            buffer = Buffer.concat([buffer, chunk]);
-        }
-
+        for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
         let type = await FileType.fromBuffer(buffer);
         let trueFileName = attachExtension ? filename + "." + type.ext : filename;
         await fs.writeFileSync(trueFileName, buffer);
-        
         return trueFileName;
     };
 
     sock.sendVideoAsSticker = async (jid, path, quoted, options = {}) => {
-        let buff = Buffer.isBuffer(path) ? 
-            path : /^data:.*?\/.*?;base64,/i.test(path) ?
-            Buffer.from(path.split`,`[1], 'base64') : /^https?:\/\//.test(path) ?
-            await (await getBuffer(path)) : fs.existsSync(path) ? 
-            fs.readFileSync(path) : Buffer.alloc(0);
-
-        let buffer;
-        if (options && (options.packname || options.author)) {
-            buffer = await writeExifVid(buff, options);
-        } else {
-            buffer = await videoToWebp(buff);
-        }
-
-        await sock.sendMessage(jid, {
-            sticker: { url: buffer }, 
-            ...options 
-        }, { quoted });
+        let buff = Buffer.isBuffer(path) ? path : /^data:.*?\/.*?;base64,/i.test(path) ? Buffer.from(path.split`,`[1], 'base64') : /^https?:\/\//.test(path) ? await (await getBuffer(path)) : fs.existsSync(path) ? fs.readFileSync(path) : Buffer.alloc(0);
+        let buffer = (options && (options.packname || options.author)) ? await writeExifVid(buff, options) : await videoToWebp(buff);
+        await sock.sendMessage(jid, { sticker: { url: buffer }, ...options }, { quoted });
         return buffer;
     };
-    
+
     sock.getFile = async (PATH, returnAsFilename) => {
         let res, filename;
-        const data = Buffer.isBuffer(PATH) ?
-              PATH : /^data:.*?\/.*?;base64,/i.test(PATH) ?
-              Buffer.from(PATH.split`,`[1], 'base64') : /^https?:\/\//.test(PATH) ?
-              await (res = await fetch(PATH)).buffer() : fs.existsSync(PATH) ?
-              (filename = PATH, fs.readFileSync(PATH)) : typeof PATH === 'string' ? 
-              PATH : Buffer.alloc(0);
-              
+        const data = Buffer.isBuffer(PATH) ? PATH : /^data:.*?\/.*?;base64,/i.test(PATH) ? Buffer.from(PATH.split`,`[1], 'base64') : /^https?:\/\//.test(PATH) ? (res = await fetch(PATH)).buffer() : fs.existsSync(PATH) ? (filename = PATH, fs.readFileSync(PATH)) : typeof PATH === 'string' ? PATH : Buffer.alloc(0);
         if (!Buffer.isBuffer(data)) throw new TypeError('Result is not a buffer');
-        
-        const type = await FileType.fromBuffer(data) || {
-            mime: 'application/octet-stream',
-            ext: '.bin'
-        };
-        
+        const type = await FileType.fromBuffer(data) || { mime: 'application/octet-stream', ext: '.bin' };
         if (data && returnAsFilename && !filename) {
             filename = path.join(__dirname, './tmp/' + new Date() * 1 + '.' + type.ext);
             await fs.promises.writeFile(filename, data);
         }
-        
-        return {
-            res,
-            filename,
-            ...type,
-            data,
-            deleteFile() {
-                return filename && fs.promises.unlink(filename);
-            }
-        };
+        return { res, filename, ...type, data, deleteFile() { return filename && fs.promises.unlink(filename); } };
     };
     
     sock.sendFile = async (jid, path, filename = '', caption = '', quoted, ptt = false, options = {}) => {
         let type = await sock.getFile(path, true);
         let { res, data: file, filename: pathFile } = type;
-        
-        if (res && res.status !== 200 || file.length <= 65536) {
-            try {
-                throw { json: JSON.parse(file.toString()) };
-            } catch (e) { 
-                if (e.json) throw e.json;
-            }
-        }
-        
+        if (res && res.status !== 200 || file.length <= 65536) try { throw { json: JSON.parse(file.toString()) }; } catch (e) { if (e.json) throw e.json; }
         let opt = { filename };
         if (quoted) opt.quoted = quoted;
         if (!type) options.asDocument = true;
-        
         let mtype = '', mimetype = type.mime, convert;
-        
         if (/webp/.test(type.mime) || (/image/.test(type.mime) && options.asSticker)) mtype = 'sticker';
         else if (/image/.test(type.mime) || (/webp/.test(type.mime) && options.asImage)) mtype = 'image';
         else if (/video/.test(type.mime)) mtype = 'video';
@@ -372,56 +228,25 @@ const clientstart = async() => {
             pathFile = convert.filename;
             mtype = 'audio';
             mimetype = 'audio/ogg; codecs=opus';
-        }
-        else mtype = 'document';
-        
+        } else mtype = 'document';
         if (options.asDocument) mtype = 'document';
-        
-        let message = {
-            ...options,
-            caption,
-            ptt,
-            [mtype]: { url: pathFile },
-            mimetype
-        };
-        
+        let message = { ...options, caption, ptt, [mtype]: { url: pathFile }, mimetype };
         let m;
         try {
-            m = await sock.sendMessage(jid, message, {
-                ...opt,
-                ...options
-            });
+            m = await sock.sendMessage(jid, message, { ...opt, ...options });
         } catch (e) {
             console.error(e);
-            m = null;
-        } finally {
-            if (!m) {
-                m = await sock.sendMessage(jid, {
-                    ...message,
-                    [mtype]: file
-                }, {
-                    ...opt,
-                    ...options 
-                });
-            }
-            return m;
+            m = await sock.sendMessage(jid, { ...message, [mtype]: file }, { ...opt, ...options });
         }
+        return m;
     };
-    
+
     return sock;
 };
 
 clientstart();
 
-const ignoredErrors = [
-    'Socket connection timeout',
-    'EKEYTYPE',
-    'item-not-found',
-    'rate-overlimit',
-    'Connection Closed',
-    'Timed Out',
-    'Value not found'
-];
+const ignoredErrors = ['Socket connection timeout', 'EKEYTYPE', 'item-not-found', 'rate-overlimit', 'Connection Closed', 'Timed Out', 'Value not found'];
 
 let file = require.resolve(__filename);
 require('fs').watchFile(file, () => {
