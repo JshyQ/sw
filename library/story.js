@@ -3,7 +3,9 @@
 // - posts media to status@broadcast WITHOUT re-encoding, so quality stays as-is
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
+const { spawn } = require('child_process');
 
 const config = () => require('../settings/config');
 const FILE = path.join(__dirname, 'database', 'story-audience.json');
@@ -58,6 +60,55 @@ const bind = (sock) => {
     }
 };
 
+// Split a video into consecutive parts WITHOUT re-encoding (stream copy = no quality loss).
+// Cuts land on keyframes, so each part is slightly under the limit (2s safety margin).
+// Order: config.story.ffmpegPath -> system "ffmpeg" (if it runs) -> bundled @ffmpeg-installer binary.
+let ffmpegCache = null;
+const ffmpegPath = () => {
+    if (ffmpegCache) return ffmpegCache;
+    const { spawnSync } = require('child_process');
+    const works = (bin) => {
+        try { return spawnSync(bin, ['-version'], { timeout: 8000 }).status === 0; } catch { return false; }
+    };
+    const candidates = [config().story?.ffmpegPath, 'ffmpeg'].filter(Boolean);
+    try { candidates.push(require('@ffmpeg-installer/ffmpeg').path); } catch {}
+    for (const bin of candidates) {
+        if (works(bin)) return (ffmpegCache = bin);
+    }
+    throw new Error('No working ffmpeg found (tried: ' + candidates.join(', ') + ')');
+};
+
+const splitVideo = async (buffer, segmentSeconds) => {
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'story-'));
+    const input = path.join(dir, 'input.mp4');
+    try {
+        await fs.promises.writeFile(input, buffer);
+        const segTime = Math.max(5, segmentSeconds - 2);
+        await new Promise((resolve, reject) => {
+            const bin = ffmpegPath();
+            const p = spawn(bin, [
+                '-y', '-i', input,
+                '-map', '0:v:0', '-map', '0:a?',
+                '-c', 'copy',
+                '-f', 'segment', '-segment_time', String(segTime),
+                '-reset_timestamps', '1',
+                '-segment_format_options', 'movflags=+faststart',
+                path.join(dir, 'part_%03d.mp4')
+            ]);
+            let err = '';
+            p.stderr.on('data', (d) => (err += d));
+            p.on('error', reject);
+            p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited with code ${code}: ` + err.trim().split('\n').slice(-4).join(' | ').slice(-400)))));
+        });
+        const files = (await fs.promises.readdir(dir)).filter((f) => f.startsWith('part_')).sort();
+        const parts = [];
+        for (const f of files) parts.push(await fs.promises.readFile(path.join(dir, f)));
+        return parts;
+    } finally {
+        fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+};
+
 const ownJid = (sock) => sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
 
 const getAudience = (sock) => [...new Set([ownJid(sock), ...audience])];
@@ -73,4 +124,4 @@ const postStory = async (sock, { buffer, mimetype, caption }) => {
     return { recipients: statusJidList.length };
 };
 
-module.exports = { bind, add, getAudience, postStory, audienceSize: () => audience.size };
+module.exports = { bind, add, getAudience, postStory, splitVideo, audienceSize: () => audience.size };
