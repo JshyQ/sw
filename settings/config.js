@@ -7,7 +7,7 @@ const config = {
     owner: "6285111606001",
     botNumber: "-",
     setPair: "K0MRAID1",
-    thumbUrl: "https://i.imgur.com/IkEv97P.jpeg",
+    thumbUrl: "https://imgur.com/a/zHQF5Ol.jpeg",
     session: "sessions",
     status: {
         public: false,
