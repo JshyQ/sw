@@ -136,6 +136,36 @@ const remuxVideo = async (buffer) => {
     }
 };
 
+// Re-encode to a much smaller mp4 while KEEPING the resolution (no scaling) and full duration.
+// opts: crf (higher = smaller, 18-40), preset, audioKbps, maxFps (0 = keep original fps)
+const compressVideo = async (buffer, opts = {}) => {
+    const { crf = 32, preset = 'medium', audioKbps = 96, maxFps = 0 } = opts;
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'story-'));
+    const input = path.join(dir, 'input.bin');
+    const output = path.join(dir, 'output.mp4');
+    try {
+        await fs.promises.writeFile(input, buffer);
+        const args = [
+            '-y', '-i', input,
+            '-map', '0:v:0', '-map', '0:a?',
+            '-c:v', 'libx264', '-preset', preset, '-crf', String(crf),
+            '-pix_fmt', 'yuv420p'
+        ];
+        if (maxFps > 0) args.push('-fpsmax', String(maxFps));
+        args.push('-c:a', 'aac', '-b:a', `${audioKbps}k`, '-movflags', '+faststart', output);
+        await new Promise((resolve, reject) => {
+            const p = spawn(ffmpegPath(), args);
+            let err = '';
+            p.stderr.on('data', (d) => (err += d));
+            p.on('error', reject);
+            p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited with code ${code}: ` + err.trim().split('\n').slice(-4).join(' | ').slice(-400)))));
+        });
+        return await fs.promises.readFile(output);
+    } finally {
+        fs.promises.rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+};
+
 const ownJid = (sock) => sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
 
 const getAudience = (sock) => [...new Set([ownJid(sock), ...audience])];
@@ -151,4 +181,4 @@ const postStory = async (sock, { buffer, mimetype, caption }) => {
     return { recipients: statusJidList.length };
 };
 
-module.exports = { bind, add, getAudience, postStory, splitVideo, remuxVideo, audienceSize: () => audience.size };
+module.exports = { bind, add, getAudience, postStory, splitVideo, remuxVideo, compressVideo, audienceSize: () => audience.size };
