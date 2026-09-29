@@ -9,6 +9,7 @@ const { spawn } = require('child_process');
 
 const config = () => require('../settings/config');
 const FILE = path.join(__dirname, 'database', 'story-audience.json');
+const POSTED_FILE = path.join(__dirname, 'database', 'story-posted.json');
 
 const audience = new Set();
 try {
@@ -22,6 +23,26 @@ const scheduleSave = () => {
         fs.writeFile(FILE, JSON.stringify([...audience]), () => {});
     }, 3000);
 };
+
+// Keys of stories we've posted (so we can delete them later, e.g. "delete all my stories").
+// Each entry: { id, participant, timestamp }. Cleared as entries are successfully deleted.
+let posted = [];
+try {
+    posted = JSON.parse(fs.readFileSync(POSTED_FILE, 'utf8'));
+    if (!Array.isArray(posted)) posted = [];
+} catch {}
+
+const savePosted = () => {
+    fs.writeFile(POSTED_FILE, JSON.stringify(posted), () => {});
+};
+
+const recordPosted = (key) => {
+    if (!key || !key.id) return;
+    posted.push({ id: key.id, participant: key.participant || null, timestamp: Date.now() });
+    savePosted();
+};
+
+const listPosted = () => [...posted];
 
 // accepts "6285..@s.whatsapp.net", "6285..:12@s.whatsapp.net" or bare digits
 const toPnJid = (v) => {
@@ -177,8 +198,40 @@ const postStory = async (sock, { buffer, mimetype, caption }) => {
     if (caption) content.caption = caption;
 
     const statusJidList = getAudience(sock);
-    await sock.sendMessage('status@broadcast', content, { statusJidList });
-    return { recipients: statusJidList.length };
+    const sent = await sock.sendMessage('status@broadcast', content, { statusJidList });
+    if (sent?.key) recordPosted(sent.key);
+    return { recipients: statusJidList.length, key: sent?.key };
 };
 
-module.exports = { bind, add, getAudience, postStory, splitVideo, remuxVideo, compressVideo, audienceSize: () => audience.size };
+// Deletes every story we have a record of posting. Best-effort: keeps whatever fails
+// so a retry doesn't re-delete already-gone entries and doesn't lose track of stuck ones.
+const deleteAllStories = async (sock) => {
+    const statusJidList = getAudience(sock);
+    const remaining = [];
+    let ok = 0;
+    let failed = 0;
+    for (const entry of posted) {
+        try {
+            const key = {
+                remoteJid: 'status@broadcast',
+                id: entry.id,
+                fromMe: true,
+                ...(entry.participant ? { participant: entry.participant } : {})
+            };
+            await sock.sendMessage('status@broadcast', { delete: key }, { statusJidList });
+            ok++;
+        } catch (e) {
+            failed++;
+            remaining.push(entry);
+        }
+    }
+    posted = remaining;
+    savePosted();
+    return { deleted: ok, failed };
+};
+
+module.exports = {
+    bind, add, getAudience, postStory, splitVideo, remuxVideo, compressVideo,
+    audienceSize: () => audience.size,
+    listPosted, deleteAllStories
+};
