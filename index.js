@@ -1,4 +1,15 @@
 console.clear();
+
+// Hide libsignal's noisy session dumps (baseKey, rootKey, ephemeralKeyPair, etc.)
+const isSignalSessionLog = (args) => args.some(a =>
+    (typeof a === 'string' && /^(Closing session|Opening session|Removing old closed session|Session already (closed|open)|Migrating session)/.test(a)) ||
+    (a && typeof a === 'object' && (a.indexInfo || a.currentRatchet || a._chains || a.registrationId !== undefined && a.indexInfo))
+);
+for (const level of ['info', 'warn', 'log']) {
+    const original = console[level];
+    console[level] = (...args) => { if (!isSignalSessionLog(args)) original.apply(console, args); };
+}
+
 const config = () => require('./settings/config');
 process.on("uncaughtException", console.error);
 
