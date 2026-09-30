@@ -5,5 +5,5 @@ module.exports = {
     description: 'Post image/video to your story, video compressed to a smaller file',
     category: 'story',
     owner: true,
-    execute: async (sock, m, ctx) => handleStoryUpload(sock, m, ctx, true)
+    execute: async (sock, m, ctx) => handleStoryUpload(sock, m, ctx, 'compress')
 };
