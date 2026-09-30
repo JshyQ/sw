@@ -5,10 +5,18 @@ const IMAGE_OK = ['image/jpeg', 'image/png', 'image/webp'];
 const mb = (n) => (n / 1024 / 1024).toFixed(2) + ' MB';
 const isMediaMime = (t) => /^(image|video)\//.test(t || '');
 
-// forceCompress: true = always re-encode video (smaller file, same resolution)
-//                false = never re-encode (original quality, just remux container if needed)
-const handleStoryUpload = async (sock, m, { quoted, mime, text, reply, prefix, config }, forceCompress) => {
-    const cmd = forceCompress ? 'swc' : 'sw';
+// mode: 'original' (.sw)   = never re-encode, same resolution (only remux container if needed)
+//       'hd'       (.swhd) = upscale to HD, file size kept about the same
+//       'compress' (.swc)  = re-encode to a smaller file, same resolution
+const MODES = {
+    original: { cmd: 'sw', label: 'original quality' },
+    hd: { cmd: 'swhd', label: 'HD upscale, same file size' },
+    compress: { cmd: 'swc', label: 'compressed video' }
+};
+
+const handleStoryUpload = async (sock, m, { quoted, mime, text, reply, prefix, config }, mode = 'original') => {
+    const { cmd, label } = MODES[mode] || MODES.original;
+    const others = Object.entries(MODES).filter(([k]) => k !== mode).map(([, v]) => `${prefix}${v.cmd} (${v.label})`).join('\n   ');
     const mtype = quoted.mtype;
     const isDoc = mtype === 'documentMessage';
     const declared = isMediaMime(mime);
@@ -17,13 +25,13 @@ const handleStoryUpload = async (sock, m, { quoted, mime, text, reply, prefix, c
     // the real type is detected from the file content below.
     if (!['imageMessage', 'videoMessage', 'documentMessage'].includes(mtype) || (!declared && !isDoc)) {
         return reply(
-            `*Post to story (${forceCompress ? 'compressed video' : 'HD video, same file size'})*\n\n` +
+            `*Post to story (${label})*\n\n` +
             `1. Send the photo/video as a *Document* (attach > Document) with caption ${prefix}${cmd}\n` +
             `   or reply to it with ${prefix}${cmd}\n` +
             `2. Optional caption: ${prefix}${cmd} your caption\n\n` +
             `Normal photos/videos are already compressed by WhatsApp before they reach the bot. ` +
             `Documents keep the original file.\n\n` +
-            `${forceCompress ? `${prefix}sw` : `${prefix}swc`} is also available if you want ${forceCompress ? 'the HD, same-size' : 'a compressed'} video instead.\n\n` +
+            `Other commands:\n   ${others}\n\n` +
             `Story audience: ${audienceSize()} contacts (+ you)`
         );
     }
@@ -66,39 +74,41 @@ const handleStoryUpload = async (sock, m, { quoted, mime, text, reply, prefix, c
             return reply(`Unsupported image type (${mimetype}). Use JPG, PNG or WEBP.`);
         }
 
-        // Videos are posted as ONE file: full length, original resolution (never scaled or split).
-        // forceCompress decides whether it gets re-encoded to a much smaller mp4 (.swc) or
-        // kept at original quality, only remuxed to mp4 if needed (.sw).
+        // Videos are posted as ONE file, full length (never split).
+        // .sw = untouched (remux only), .swhd = upscaled to HD at the same file size,
+        // .swc = re-encoded to a smaller file at the same resolution.
         let out = buffer;
         let outMime = mimetype;
         let hdInfo = null;
         if (isVideo) {
             const c = config.story?.compress || {};
             try {
-                if (forceCompress) {
+                if (mode === 'compress') {
                     await reply(`Compressing video (${mb(buffer.length)}), same resolution. This can take several minutes...`);
                     const small = await compressVideo(buffer, c);
                     if (small.length < buffer.length || mimetype !== 'video/mp4') {
                         out = small;
                         outMime = 'video/mp4';
                     } // else: already smaller than the re-encode, keep the original
-                } else {
-                    // .sw: upscale to HD at the same file size (skipped if already HD or disabled)
-                    const hdCfg = config.story?.hd || {};
-                    let hd = null;
-                    if (hdCfg.enabled !== false) {
-                        await reply(`Upgrading video to HD (${mb(buffer.length)}, keeping the file size). This can take a few minutes...`);
-                        hd = await enhanceVideo(buffer, hdCfg);
-                    }
+                } else if (mode === 'hd') {
+                    // .swhd: upscale to HD at the same file size (skipped if already HD)
+                    await reply(`Upgrading video to HD (${mb(buffer.length)}, keeping the file size). This can take a few minutes...`);
+                    const hd = await enhanceVideo(buffer, config.story?.hd || {});
                     if (hd) {
                         out = hd.buffer;
                         outMime = 'video/mp4';
                         hdInfo = `HD ${hd.from} -> ${hd.width}x${hd.height}`;
-                    } else if (mimetype !== 'video/mp4') {
-                        await reply(`Converting ${mimetype.split('/')[1]} to mp4 (no re-encode)...`);
-                        out = await remuxVideo(buffer);
-                        outMime = 'video/mp4';
+                    } else {
+                        hdInfo = 'already HD, posted as is';
+                        if (mimetype !== 'video/mp4') {
+                            out = await remuxVideo(buffer);
+                            outMime = 'video/mp4';
+                        }
                     }
+                } else if (mimetype !== 'video/mp4') {
+                    await reply(`Converting ${mimetype.split('/')[1]} to mp4 (no re-encode)...`);
+                    out = await remuxVideo(buffer);
+                    outMime = 'video/mp4';
                 }
             } catch (e) {
                 console.log(e);
