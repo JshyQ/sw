@@ -5,7 +5,7 @@ const fs = require('fs')
 
 const config = {
     owner: "6285111606001",
-    botNumber: "6285111606001",
+    botNumber: "-",
     setPair: "K0MRAID1",
     thumbUrl: "https://imgur.com/a/zHQF5Ol.jpeg",
     session: "sessions",
@@ -49,8 +49,7 @@ const config = {
             audioKbps: 96,
             maxFps: 60        // 0 = keep original fps; e.g. 60 to cap 120fps videos (much smaller)
         },
-        hd: {
-            enabled: true,        // .sw upscales videos to HD while keeping the file size about the same
+        hd: { // used by .swhd (upscale to HD, file size kept about the same)
             targetShortSide: 1080, // short side in pixels (1080 = Full HD, 720 = HD). Videos already this size or bigger are left untouched
             preset: 'slow',       // slower = better quality per MB (veryfast, medium, slow, slower)
             sharpen: 0.6,         // 0 = off, 0.3-1.0 = light to strong sharpening after upscaling
