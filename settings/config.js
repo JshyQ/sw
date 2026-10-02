@@ -44,10 +44,14 @@ const config = {
     story: {
         compress: {
             enabled: true,   // re-encode videos to a smaller file (resolution and length are never changed)
-            crf: 32,         // higher = smaller file, lower quality (26 = good, 32 = small, 36 = very small)
-            preset: 'medium', // slower = smaller file (fast, medium, slow, slower)
-            audioKbps: 96,
-            maxFps: 60        // 0 = keep original fps; e.g. 60 to cap 120fps videos (much smaller)
+            provider: 'cloudinary', // 'ffmpeg' (local, free) or 'cloudinary' (cloud, needs CLOUDINARY_* in .env)
+            crf: 32,         // higher = smaller file, lower quality (26 = good, 32 = small, 36 = very small) — ffmpeg only
+            preset: 'medium', // slower = smaller file (fast, medium, slow, slower) — ffmpeg only
+            audioKbps: 96,    // ffmpeg only
+            maxFps: 60,       // 0 = keep original fps; e.g. 60 to cap 120fps videos (much smaller) — both providers
+            cloudinary: {
+                quality: 'auto:good' // 'auto:good' | 'auto:low' | 'auto:eco' | a number 1-100 — cloudinary only
+            }
         },
         hd: { // used by .swhd (upscale to HD, file size kept about the same)
             targetShortSide: 1080, // short side in pixels (1080 = Full HD, 720 = HD). Videos already this size or bigger are left untouched
