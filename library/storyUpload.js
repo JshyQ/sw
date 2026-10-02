@@ -1,5 +1,7 @@
 const FileType = require('file-type');
 const { postStory, remuxVideo, compressVideo, enhanceVideo, audienceSize } = require('./story');
+const { compressVideoCloud } = require('./cloudinaryCompress');
+const { upscaleVideoCloud } = require('./cloudinaryUpscale');
 
 const IMAGE_OK = ['image/jpeg', 'image/png', 'image/webp'];
 const mb = (n) => (n / 1024 / 1024).toFixed(2) + ' MB';
@@ -84,16 +86,23 @@ const handleStoryUpload = async (sock, m, { quoted, mime, text, reply, prefix, c
             const c = config.story?.compress || {};
             try {
                 if (mode === 'compress') {
-                    await reply(`Compressing video (${mb(buffer.length)}), same resolution. This can take several minutes...`);
-                    const small = await compressVideo(buffer, c);
+                    const useCloud = c.provider === 'cloudinary';
+                    await reply(`Compressing video (${mb(buffer.length)}) via ${useCloud ? 'Cloudinary' : 'local ffmpeg'}, same resolution. This can take a bit...`);
+                    const small = useCloud
+                        ? await compressVideoCloud(buffer, c.cloudinary || {})
+                        : await compressVideo(buffer, c);
                     if (small.length < buffer.length || mimetype !== 'video/mp4') {
                         out = small;
                         outMime = 'video/mp4';
                     } // else: already smaller than the re-encode, keep the original
                 } else if (mode === 'hd') {
                     // .swhd: upscale to HD at the same file size (skipped if already HD)
-                    await reply(`Upgrading video to HD (${mb(buffer.length)}, keeping the file size). This can take a few minutes...`);
-                    const hd = await enhanceVideo(buffer, config.story?.hd || {});
+                    const hdConf = config.story?.hd || {};
+                    const useCloud = hdConf.provider === 'cloudinary';
+                    await reply(`Upgrading video to HD via ${useCloud ? 'Cloudinary' : 'local ffmpeg'} (${mb(buffer.length)}, keeping the file size). This can take a few minutes...`);
+                    const hd = useCloud
+                        ? await upscaleVideoCloud(buffer, hdConf)
+                        : await enhanceVideo(buffer, hdConf);
                     if (hd) {
                         out = hd.buffer;
                         outMime = 'video/mp4';
