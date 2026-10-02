@@ -54,12 +54,13 @@ const config = {
             }
         },
         hd: { // used by .swhd (upscale to HD, file size kept about the same)
+            provider: 'ffmpeg', // 'ffmpeg' (local, free) or 'cloudinary' (offloads the encode to Cloudinary's servers — same scale+sharpen technique, not a different/better result; Cloudinary has no public AI video-upscale API)
             targetShortSide: 1080, // short side in pixels (1080 = Full HD, 720 = HD). Videos already this size or bigger are left untouched
             preset: 'slow',       // slower = better quality per MB (veryfast, medium, slow, slower)
             sharpen: 0.6,         // 0 = off, 0.3-1.0 = light to strong sharpening after upscaling
             denoise: true,        // remove noise first so the bitrate is spent on real detail
             audioKbps: 128,
-            maxFps: 0,           // 0 = keep original fps
+            maxFps: 60,           // 0 = keep original fps
             twoPass: true,        // more accurate file size, takes about twice as long
             sizeTolerance: 1.08   // if the result is bigger than original x this, the original is posted instead
         },
