@@ -1,4 +1,5 @@
 const axios = require('axios');
+const chalk = require('chalk');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -14,6 +15,14 @@ const HEIGHT = 1920;
 const FPS = 30;
 
 const config = () => require('../settings/config');
+
+// Terminal progress messages so you can see what the bot is doing.
+const log = (msg, kind = 'info') => {
+    const colors = { info: chalk.cyan, ok: chalk.green, warn: chalk.yellow, err: chalk.red };
+    const time = new Date().toLocaleTimeString('en-GB');
+    console.log(chalk.gray(`[${time}]`), colors[kind]('[ttslide]'), msg);
+};
+const secs = (start) => ((Date.now() - start) / 1000).toFixed(1) + 's';
 
 const abs = (u) => (u && u.startsWith('http') ? u : u ? 'https://www.tikwm.com' + u : null);
 
@@ -108,7 +117,10 @@ const buildSlideshow = async (imageFiles, audioFile, outFile) => {
         '-movflags', '+faststart',
         outFile
     );
+    log(`Turning ${n} image${n > 1 ? 's' : ''} into a ${total}s video (ffmpeg encoding, this is the slow part)...`);
+    const start = Date.now();
     await runFfmpeg(args);
+    log(`Video encoded in ${secs(start)}`, 'ok');
 };
 
 module.exports = {
@@ -123,16 +135,23 @@ module.exports = {
 
         await sock.sendMessage(m.chat, { react: { text: '⬇️', key: m.key } });
 
+        const t0 = Date.now();
+        log(`New request: ${link}`);
+        log('Fetching post info from tikwm...');
+
         let info;
         try {
             info = await fetchInfo(link);
+            log('Post info received', 'ok');
         } catch (e) {
+            log(`Could not fetch post info: ${e.message}`, 'err');
             await sock.sendMessage(m.chat, { react: { text: '❌', key: m.key } });
             return reply(`Couldn't fetch that TikTok: ${e.message}`);
         }
 
         const images = (info.images || []).map(abs).filter(Boolean);
         if (!images.length) {
+            log('Post has no images (normal video), stopping', 'warn');
             await sock.sendMessage(m.chat, { react: { text: '❌', key: m.key } });
             return reply(`That post has no images (it looks like a normal video). Use ${prefix}tt for videos.`);
         }
@@ -140,25 +159,34 @@ module.exports = {
         const total = images.length * SECONDS_PER_IMAGE;
         await reply(`Photo post with ${images.length} image${images.length > 1 ? 's' : ''}. Building a ${total}s slideshow (${SECONDS_PER_IMAGE}s each)...`);
 
+        log(`Found ${images.length} image${images.length > 1 ? 's' : ''}, ${total}s slideshow planned`);
+
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ttslide-'));
         try {
             const files = [];
             for (let i = 0; i < images.length; i++) {
                 const f = path.join(dir, `img${String(i).padStart(3, '0')}.jpg`);
+                log(`Downloading image ${i + 1}/${images.length}...`);
                 await download(images[i], f, 30);
                 files.push(f);
             }
+            log('All images downloaded', 'ok');
 
             // Post music (optional: if it can't be fetched the video is still made, just silent)
             let audioFile = null;
             const musicUrl = abs(info.music) || abs(info.music_info?.play);
             if (musicUrl) {
                 try {
+                    log('Downloading post music...');
                     audioFile = path.join(dir, 'music.mp3');
                     await download(musicUrl, audioFile, 30);
-                } catch {
+                    log('Music downloaded', 'ok');
+                } catch (e) {
                     audioFile = null;
+                    log(`Music download failed (${e.message}), continuing without audio`, 'warn');
                 }
+            } else {
+                log('No music found for this post, video will be silent', 'warn');
             }
 
             const outFile = path.join(dir, 'slideshow.mp4');
@@ -168,6 +196,8 @@ module.exports = {
                 ? `${info.title}${info.author?.nickname ? `\n\n🎵 @${info.author.unique_id || info.author.nickname}` : ''}`
                 : undefined;
 
+            const sizeMb = (fs.statSync(outFile).size / 1024 / 1024).toFixed(2);
+            log(`Sending video to chat (${sizeMb} MB)...`);
             await sock.sendMessage(m.chat, {
                 video: fs.readFileSync(outFile),
                 mimetype: 'video/mp4',
@@ -175,10 +205,13 @@ module.exports = {
             }, { quoted: m });
 
             await sock.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
+            log(`Done! Total time ${secs(t0)}`, 'ok');
         } catch (e) {
+            log(`FAILED: ${e.message}`, 'err');
             await sock.sendMessage(m.chat, { react: { text: '❌', key: m.key } });
             await reply(`Couldn't build the slideshow: ${e.message}`);
         } finally {
+            log('Cleaning up temp files');
             fs.rmSync(dir, { recursive: true, force: true });
         }
     }
