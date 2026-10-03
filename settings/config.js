@@ -48,7 +48,7 @@ const config = {
             crf: 32,         // higher = smaller file, lower quality (26 = good, 32 = small, 36 = very small) — ffmpeg only
             preset: 'medium', // slower = smaller file (fast, medium, slow, slower) — ffmpeg only
             audioKbps: 96,    // ffmpeg only
-            maxFps: 60,       // 0 = keep original fps; e.g. 60 to cap 120fps videos (much smaller) — both providers
+            maxFps: 0,       // 0 = keep original fps; e.g. 60 to cap 120fps videos (much smaller) — both providers
             cloudinary: {
                 quality: 'auto:good' // 'auto:good' | 'auto:low' | 'auto:eco' | a number 1-100 — cloudinary only
             }
