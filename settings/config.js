@@ -44,7 +44,7 @@ const config = {
     story: {
         compress: {
             enabled: true,   // re-encode videos to a smaller file (resolution and length are never changed)
-            provider: 'cloudinary', // 'ffmpeg' (local, free) or 'cloudinary' (cloud, needs CLOUDINARY_* in .env)
+            provider: 'ffmpeg', // 'ffmpeg' (local, free) or 'cloudinary' (cloud, needs CLOUDINARY_* in .env)
             crf: 32,         // higher = smaller file, lower quality (26 = good, 32 = small, 36 = very small) — ffmpeg only
             preset: 'slow', // slower = smaller file (fast, medium, slow, slower) — ffmpeg only
             audioKbps: 96,    // ffmpeg only
