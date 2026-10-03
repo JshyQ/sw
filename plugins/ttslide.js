@@ -7,7 +7,7 @@ const { spawn, spawnSync } = require('child_process');
 const TT_LINK = /https?:\/\/(?:www\.|vt\.|vm\.|m\.)?tiktok\.com\/\S+/i;
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36';
 
-const SECONDS_PER_IMAGE = 5;   // every image is shown for exactly this long
+const SECONDS_PER_IMAGE = 3.5;   // every image is shown for exactly this long
 const TRANSITION = 0.4;        // seconds of the right-to-left slide between images
 const WIDTH = 1080;
 const HEIGHT = 1920;
