@@ -46,12 +46,12 @@ const config = {
             enabled: true,   // re-encode videos to a smaller file (resolution and length are never changed)
             provider: 'cloudinary', // 'ffmpeg' (local, free) or 'cloudinary' (cloud, needs CLOUDINARY_* in .env)
             crf: 32,         // higher = smaller file, lower quality (26 = good, 32 = small, 36 = very small) — ffmpeg only
-            preset: 'medium', // slower = smaller file (fast, medium, slow, slower) — ffmpeg only
+            preset: 'slow', // slower = smaller file (fast, medium, slow, slower) — ffmpeg only
             audioKbps: 96,    // ffmpeg only
             maxFps: 0,       // 0 = keep original fps; e.g. 60 to cap 120fps videos (much smaller) — both providers
             cloudinary: {
                 quality: 'auto:good', // 'auto:good' | 'auto:low' | 'auto:eco' | a number 1-100 — cloudinary only
-                maxUploadMb: 300      // videos bigger than this skip Cloudinary and use local ffmpeg (free plan limit is 100 MB; raise it on a paid plan)
+                maxUploadMb: 100      // videos bigger than this skip Cloudinary and use local ffmpeg (free plan limit is 100 MB; raise it on a paid plan)
             }
         },
         hd: { // used by .swhd (upscale to HD, file size kept about the same)
