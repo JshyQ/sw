@@ -1,8 +1,9 @@
+require('dotenv').config();
 console.clear();
 
 // Hide libsignal's noisy session dumps (baseKey, rootKey, ephemeralKeyPair, etc.)
 const isSignalSessionLog = (args) => args.some(a =>
-    (typeof a === 'string' && /^(Closing session|Opening session|Removing old closed session|Session already (closed|open)|Migrating session)/.test(a)) ||
+    (typeof a === 'string' && /^(Closing session|Closing open session|Opening session|Removing old closed session|Session already (closed|open)|Migrating session|Decrypted message with closed session)/.test(a)) ||
     (a && typeof a === 'object' && (a.indexInfo || a.currentRatchet || a._chains || a.registrationId !== undefined && a.indexInfo))
 );
 for (const level of ['info', 'warn', 'log']) {
@@ -84,7 +85,9 @@ const clientstart = async() => {
         printQRInTerminal: !config().status.terminal,
         auth: state,
         version: version,
-        browser: randomBrowser
+        browser: randomBrowser,
+        syncFullHistory: false, // don't pull old chat history on connect/reconnect — less to replay after being offline
+        shouldSyncHistoryMessage: () => false
     });
     
     if (config().status.terminal && !sock.authState.creds.registered) {
