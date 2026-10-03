@@ -11,7 +11,7 @@ const os = require('os');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 const { postStory, audienceSize } = require('../library/story');
-const { createLogger, secs, mb } = require('../library/logger');
+const chalk = require('chalk');
 
 const PART_SECONDS = 90;   // max length of one story part
 const MIN_LAST = 5;        // if the leftover last part would be shorter than this, spread the length evenly instead
@@ -20,7 +20,14 @@ const PRESET = 'veryfast'; // encoding speed (slower presets give smaller files,
 const AUDIO_KBPS = 160;
 const DELAY_BETWEEN_POSTS = 1500; // ms, keeps the parts in the right order on the story
 
-const log = createLogger('sws');
+// Terminal progress messages (cyan = running, green = done, yellow = warning, red = failure).
+const COLORS = { info: chalk.cyan, ok: chalk.green, warn: chalk.yellow, err: chalk.red };
+const log = (msg, kind = 'info') => {
+    const time = new Date().toLocaleTimeString('en-GB');
+    console.log(chalk.gray(`[${time}]`), (COLORS[kind] || COLORS.info)('[sws]'), msg);
+};
+const secs = (start) => ((Date.now() - start) / 1000).toFixed(1) + 's';
+const mb = (bytes) => (bytes / 1024 / 1024).toFixed(2) + ' MB';
 const config = () => require('../settings/config');
 const fmt = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
