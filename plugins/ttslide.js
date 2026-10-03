@@ -12,7 +12,7 @@ const SECONDS_PER_IMAGE = 3.5;   // every image is shown for exactly this long
 const TRANSITION = 0.4;        // seconds of the right-to-left slide between images
 const WIDTH = 1080;
 const HEIGHT = 1920;
-const FPS = 30;
+const FPS = 60;
 
 const config = () => require('../settings/config');
 
