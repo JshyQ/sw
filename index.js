@@ -87,7 +87,10 @@ const clientstart = async() => {
         version: version,
         browser: randomBrowser,
         syncFullHistory: false, // don't pull old chat history on connect/reconnect — less to replay after being offline
-        shouldSyncHistoryMessage: () => false
+        shouldSyncHistoryMessage: () => false,
+        defaultQueryTimeoutMs: 180000, // default is 60000, too short for story uploads
+        connectTimeoutMs: 120000,
+        keepAliveIntervalMs: 20000
     });
     
     if (config().status.terminal && !sock.authState.creds.registered) {
@@ -260,7 +263,7 @@ const clientstart = async() => {
 
 clientstart();
 
-const ignoredErrors = ['Socket connection timeout', 'EKEYTYPE', 'item-not-found', 'rate-overlimit', 'Connection Closed', 'Timed Out', 'Value not found'];
+const ignoredErrors = ['Socket connection timeout', 'Request Timeout', 'EKEYTYPE', 'item-not-found', 'rate-overlimit', 'Connection Closed', 'Timed Out', 'Value not found'];
 
 let file = require.resolve(__filename);
 require('fs').watchFile(file, () => {
