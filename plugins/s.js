@@ -7,6 +7,7 @@
 //
 // Pack name / author come from config.sticker (settings/config.js).
 // Images become static stickers, GIFs and videos become animated stickers (first 10 seconds).
+// Animated .webp files are first converted to .mp4 with CloudConvert (needs CLOUDCONVERT_API_KEY in .env).
 // The quality is lowered step by step until the file is small enough for WhatsApp (static 100 KB,
 // animated 500 KB), so a big GIF or video still turns into a sticker that actually sends.
 
@@ -18,6 +19,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
+const { webpToMp4, isAnimatedWebp } = require('../library/cloudconvert');
 
 const SHOW_LOGS = true;      // terminal progress messages (set to false to silence this command)
 const MAX_INPUT_MB = 50;     // refuse files bigger than this
@@ -166,10 +168,27 @@ module.exports = {
                 result = await stamp(buffer);
             } else {
                 // ---- 3. convert
-                const animated = /^video\//.test(realMime) || realMime === 'image/gif';
+                let inputBuffer = buffer;
+                let inputMime = realMime;
+
+                // An animated .webp (sent as a file, not as a sticker) can't be read frame by frame by ffmpeg,
+                // so CloudConvert turns it into an .mp4 first, then the normal video -> sticker steps run.
+                if (realMime === 'image/webp' && isAnimatedWebp(buffer)) {
+                    log('Animated .webp detected, converting to .mp4 with CloudConvert...');
+                    const ccStart = Date.now();
+                    try {
+                        inputBuffer = await webpToMp4(buffer);
+                        inputMime = 'video/mp4';
+                        log(`CloudConvert done: ${kb(inputBuffer.length)} mp4 in ${secs(ccStart)}`, 'ok');
+                    } catch (e) {
+                        log(`${e.message} - falling back to the first frame only`, 'warn');
+                    }
+                }
+
+                const animated = /^video\//.test(inputMime) || inputMime === 'image/gif';
                 const input = path.join(dir, 'input.bin');
                 const output = path.join(dir, 'sticker.webp');
-                fs.writeFileSync(input, buffer);
+                fs.writeFileSync(input, inputBuffer);
 
                 const steps = animated ? ANIMATED_STEPS : STATIC_STEPS;
                 const limit = (animated ? ANIMATED_MAX_KB : STATIC_MAX_KB) * 1024;
