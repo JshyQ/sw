@@ -310,7 +310,16 @@ const postStory = async (sock, { buffer, mimetype, caption }) => {
     if (caption) content.caption = caption;
 
     const statusJidList = getAudience(sock);
-    const sent = await sock.sendMessage('status@broadcast', content, { statusJidList });
+    let sent;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+        try {
+            sent = await sock.sendMessage('status@broadcast', content, { statusJidList });
+            break;
+        } catch (e) {
+            if (attempt === 2 || !/Request Timeout|Timed Out/i.test(e.message || '')) throw e;
+            await new Promise((r) => setTimeout(r, 3000));
+        }
+    }
     if (sent?.key) recordPosted(sent.key);
     return { recipients: statusJidList.length, key: sent?.key };
 };
