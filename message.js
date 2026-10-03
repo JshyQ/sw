@@ -10,6 +10,8 @@ const { dechtml, fetchWithTimeout } = require('./library/function');
 const { tempfiles } = require("./library/uploader");
 const { fquoted } = require('./library/quoted');     
 const Api = require('./library/Api');
+const { makeLog, secs } = require('./library/botlog');
+const cmdLog = makeLog('cmd');
 
 const image = fs.readFileSync('./thumbnail/image.jpg');
 const docu = fs.readFileSync('./thumbnail/document.jpg');
@@ -122,6 +124,8 @@ class PluginLoader {
                 return true; // Silent - don't respond
             }
 
+            cmdLog(`Running ${prefix}${command}${text ? ' ' + String(text).slice(0, 60) : ''}`);
+            const cmdStart = Date.now();
             await plugin.execute(sock, m, {
                 args,
                 text,
@@ -144,8 +148,10 @@ class PluginLoader {
                 config,
                 sender
             });
+            cmdLog(`Finished ${prefix}${command} in ${secs(cmdStart)}`, 'ok');
             return true;
         } catch (error) {
+            cmdLog(`${prefix}${command} crashed: ${error.message || error}`, 'err');
             console.log(chalk.red(`❌ Error executing plugin ${command}:`, error));
             return true; // Silent - don't respond with error
         }
