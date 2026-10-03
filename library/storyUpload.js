@@ -1,4 +1,5 @@
 const FileType = require('file-type');
+const { makeLog, secs } = require('./botlog');
 const { postStory, remuxVideo, compressVideo, enhanceVideo, audienceSize } = require('./story');
 const { compressVideoCloud } = require('./cloudinaryCompress');
 const { upscaleVideoCloud } = require('./cloudinaryUpscale');
@@ -18,6 +19,7 @@ const MODES = {
 
 const handleStoryUpload = async (sock, m, { quoted, mime, text, reply, prefix, config }, mode = 'original') => {
     const { cmd, label } = MODES[mode] || MODES.original;
+    const log = makeLog(cmd);
     const others = Object.entries(MODES).filter(([k]) => k !== mode).map(([, v]) => `${prefix}${v.cmd} (${v.label})`).join('\n   ');
     const mtype = quoted.mtype;
     const isDoc = mtype === 'documentMessage';
@@ -40,6 +42,8 @@ const handleStoryUpload = async (sock, m, { quoted, mime, text, reply, prefix, c
 
     const mediaMsg = quoted.msg || quoted;
     await reply('Downloading...');
+    log('Downloading media from WhatsApp...');
+    const t0 = Date.now();
 
     try {
         // Download original bytes. Type must match the message type (document != image).
@@ -65,6 +69,7 @@ const handleStoryUpload = async (sock, m, { quoted, mime, text, reply, prefix, c
         if (rejected) return reply(`That file is not an image/video (detected: ${rejected}).`);
 
         const buffer = Buffer.concat(chunks);
+        log(`Media downloaded: ${mb(buffer.length)} in ${secs(t0)}`, 'ok');
         if (!checked) { // tiny file, sniff whole thing
             const t = await FileType.fromBuffer(buffer);
             if (!t || !isMediaMime(t.mime)) return reply('That file is not an image/video.');
@@ -88,9 +93,12 @@ const handleStoryUpload = async (sock, m, { quoted, mime, text, reply, prefix, c
                 if (mode === 'compress') {
                     const useCloud = c.provider === 'cloudinary';
                     await reply(`Compressing video (${mb(buffer.length)}) via ${useCloud ? 'Cloudinary' : 'local ffmpeg'}, same resolution. This can take a bit...`);
+                    log(`Compressing video (${mb(buffer.length)}) via ${useCloud ? 'Cloudinary (uploading + transcoding, can take a while)' : 'local ffmpeg'}...`);
+                    const tc = Date.now();
                     const small = useCloud
                         ? await compressVideoCloud(buffer, c.cloudinary || {})
                         : await compressVideo(buffer, c);
+                    log(`Compression finished: ${mb(buffer.length)} -> ${mb(small.length)} in ${secs(tc)}`, 'ok');
                     if (small.length < buffer.length || mimetype !== 'video/mp4') {
                         out = small;
                         outMime = 'video/mp4';
@@ -100,9 +108,12 @@ const handleStoryUpload = async (sock, m, { quoted, mime, text, reply, prefix, c
                     const hdConf = config.story?.hd || {};
                     const useCloud = hdConf.provider === 'cloudinary';
                     await reply(`Upgrading video to HD via ${useCloud ? 'Cloudinary' : 'local ffmpeg'} (${mb(buffer.length)}, keeping the file size). This can take a few minutes...`);
+                    log(`Upgrading video to HD (${mb(buffer.length)}) via ${useCloud ? 'Cloudinary' : 'local ffmpeg'}...`);
+                    const th = Date.now();
                     const hd = useCloud
                         ? await upscaleVideoCloud(buffer, hdConf)
                         : await enhanceVideo(buffer, hdConf);
+                    log(hd ? `HD upgrade finished in ${secs(th)}` : `Video is already HD, nothing to upscale (${secs(th)})`, 'ok');
                     if (hd) {
                         out = hd.buffer;
                         outMime = 'video/mp4';
@@ -115,21 +126,27 @@ const handleStoryUpload = async (sock, m, { quoted, mime, text, reply, prefix, c
                         }
                     }
                 } else if (mimetype !== 'video/mp4') {
+                    log(`Converting ${mimetype.split('/')[1]} to mp4 (no re-encode)...`);
                     await reply(`Converting ${mimetype.split('/')[1]} to mp4 (no re-encode)...`);
                     out = await remuxVideo(buffer);
                     outMime = 'video/mp4';
                 }
             } catch (e) {
+                log(`Video processing failed: ${e.message || e}`, 'err');
                 console.log(e);
                 return reply(`Could not process the video. Nothing was posted.\nReason: ${e.message || e}`);
             }
         }
 
+        log(`Uploading to your story (${mb(out.length)}, ${isVideo ? 'video' : 'image'})...`);
+        const tu = Date.now();
         await reply(`Uploading to story (${mb(out.length)}${out !== buffer ? `, was ${mb(buffer.length)}` : ''})...`);
         const { recipients } = await postStory(sock, { buffer: out, mimetype: outMime, caption: text });
+        log(`Story posted to ${recipients} recipients in ${secs(tu)}. Total time ${secs(t0)}`, 'ok');
 
         await reply(`Story posted (${isVideo ? 'video, full length' : 'image'}, ${mb(out.length)}, ${hdInfo || (out !== buffer ? 'compressed, same resolution' : 'original')}, ${recipients} recipients)`);
     } catch (e) {
+        log(`FAILED: ${e.message || e}`, 'err');
         console.log(e);
         await reply(`Failed: ${e.message || e}`);
     }
