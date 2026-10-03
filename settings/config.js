@@ -50,7 +50,8 @@ const config = {
             audioKbps: 96,    // ffmpeg only
             maxFps: 0,       // 0 = keep original fps; e.g. 60 to cap 120fps videos (much smaller) — both providers
             cloudinary: {
-                quality: 'auto:good' // 'auto:good' | 'auto:low' | 'auto:eco' | a number 1-100 — cloudinary only
+                quality: 'auto:good', // 'auto:good' | 'auto:low' | 'auto:eco' | a number 1-100 — cloudinary only
+                maxUploadMb: 300      // videos bigger than this skip Cloudinary and use local ffmpeg (free plan limit is 100 MB; raise it on a paid plan)
             }
         },
         hd: { // used by .swhd (upscale to HD, file size kept about the same)
