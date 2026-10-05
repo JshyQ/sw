@@ -141,7 +141,7 @@ const handleStoryUpload = async (sock, m, { quoted, mime, text, reply, prefix, c
         log(`Uploading to your story (${mb(out.length)}, ${isVideo ? 'video' : 'image'})...`);
         const tu = Date.now();
         await reply(`Uploading to story (${mb(out.length)}${out !== buffer ? `, was ${mb(buffer.length)}` : ''})...`);
-        const { recipients } = await postStory(sock, { buffer: out, mimetype: outMime, caption: text });
+        const { recipients } = await postStory(sock, { buffer: out, mimetype: outMime, caption: text, log });
         log(`Story posted to ${recipients} recipients in ${secs(tu)}. Total time ${secs(t0)}`, 'ok');
 
         await reply(`Story posted (${isVideo ? 'video, full length' : 'image'}, ${mb(out.length)}, ${hdInfo || (out !== buffer ? 'compressed, same resolution' : 'original')}, ${recipients} recipients)`);
