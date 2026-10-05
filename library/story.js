@@ -303,21 +303,60 @@ const ownJid = (sock) => sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp
 
 const getAudience = (sock) => [...new Set([ownJid(sock), ...audience])];
 
+// Asks WhatsApp which numbers in the audience really exist and drops the rest (saved to disk).
+// A single bad JID in statusJidList makes the whole story fail with "not-acceptable" (406),
+// so this runs automatically when that error happens.
+const pruneAudience = async (sock) => {
+    const own = ownJid(sock);
+    const list = [...audience].filter((j) => j !== own);
+    const bad = new Set();
+    let checked = 0;
+    for (let i = 0; i < list.length; i += 100) {
+        const chunk = list.slice(i, i + 100);
+        try {
+            const res = await sock.onWhatsApp(...chunk.map((j) => j.split('@')[0]));
+            const alive = new Set((res || []).filter((r) => r.exists).map((r) => r.jid.split('@')[0].split(':')[0]));
+            for (const j of chunk) if (!alive.has(j.split('@')[0])) bad.add(j);
+            checked += chunk.length;
+        } catch {
+            // lookup failed for this chunk: keep those contacts rather than deleting good ones
+        }
+    }
+    for (const j of bad) audience.delete(j);
+    if (bad.size) scheduleSave();
+    return { checked, removed: bad.size, remaining: audience.size };
+};
+
 // buffer must be the ORIGINAL bytes (no resize / re-encode)
-const postStory = async (sock, { buffer, mimetype, caption }) => {
+const postStory = async (sock, { buffer, mimetype, caption, log = () => {} }) => {
     const isVideo = /^video\//.test(mimetype);
     const content = isVideo ? { video: buffer, mimetype } : { image: buffer, mimetype };
     if (caption) content.caption = caption;
 
-    const statusJidList = getAudience(sock);
+    let statusJidList = getAudience(sock);
+    log(`Story audience: ${statusJidList.length} JIDs (incl. you)`);
     let sent;
-    for (let attempt = 1; attempt <= 2; attempt++) {
+    let pruned = false;
+    for (let attempt = 1; attempt <= 3; attempt++) {
         try {
             sent = await sock.sendMessage('status@broadcast', content, { statusJidList });
             break;
         } catch (e) {
-            if (attempt === 2 || !/Request Timeout|Timed Out/i.test(e.message || '')) throw e;
-            await new Promise((r) => setTimeout(r, 3000));
+            const msg = e.message || '';
+            if (attempt === 3) throw e;
+            if (/not-acceptable/i.test(msg) && !pruned) {
+                pruned = true;
+                log('WhatsApp rejected the audience list (not-acceptable). Checking which contacts are invalid...', 'warn');
+                const r = await pruneAudience(sock);
+                log(`Checked ${r.checked}, removed ${r.removed} invalid, ${r.remaining} left. Retrying...`, r.removed ? 'ok' : 'warn');
+                statusJidList = getAudience(sock);
+                continue;
+            }
+            if (/Request Timeout|Timed Out/i.test(msg)) {
+                await new Promise((r) => setTimeout(r, 3000));
+                continue;
+            }
+            throw e;
         }
     }
     if (sent?.key) recordPosted(sent.key);
@@ -352,7 +391,7 @@ const deleteAllStories = async (sock) => {
 };
 
 module.exports = {
-    bind, add, getAudience, postStory, splitVideo, remuxVideo, compressVideo, enhanceVideo,
+    bind, add, getAudience, postStory, pruneAudience, splitVideo, remuxVideo, compressVideo, enhanceVideo,
     audienceSize: () => audience.size,
     listPosted, deleteAllStories
 };
