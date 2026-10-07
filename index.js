@@ -1,6 +1,27 @@
 require('dotenv').config();
 console.clear();
 
+// ---- single-instance guard: two copies of the bot on the same login corrupt the encryption
+// sessions ("Bad MAC"). If another copy is already running, stop right here.
+{
+    const fs = require('fs'), path = require('path');
+    const LOCK = path.join(__dirname, '.bot.lock');
+    let other = 0;
+    try { other = parseInt(fs.readFileSync(LOCK, 'utf8'), 10) || 0; } catch {}
+    if (other && other !== process.pid) {
+        let alive = false;
+        try { process.kill(other, 0); alive = true; } catch (e) { alive = e.code === 'EPERM'; }
+        if (alive) {
+            console.log(`Another copy of the bot is already running (process ${other}). Stop it first, then start this one.`);
+            process.exit(1);
+        }
+    }
+    fs.writeFileSync(LOCK, String(process.pid));
+    const release = () => { try { if (fs.readFileSync(LOCK, 'utf8') === String(process.pid)) fs.unlinkSync(LOCK); } catch {} };
+    process.on('exit', release);
+    for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { release(); process.exit(0); });
+}
+
 // Hide libsignal's noisy session dumps (baseKey, rootKey, ephemeralKeyPair, etc.)
 const isSignalSessionLog = (args) => args.some(a =>
     (typeof a === 'string' && /^(Closing session|Closing open session|Opening session|Removing old closed session|Session already (closed|open)|Migrating session|Decrypted message with closed session)/.test(a)) ||
@@ -52,7 +73,7 @@ const question = (text) => {
     });
 };
 
-const clientstart = async() => {
+const startSocket = async () => {
     await loadBaileys();
     
     const browserOptions = [
@@ -261,15 +282,35 @@ const clientstart = async() => {
     return sock;
 };
 
+// Only ONE socket may exist at a time. Before a reconnect the old socket is detached and closed,
+// and overlapping start requests are ignored (otherwise every close event spawns another bot).
+let activeSock = null;
+let starting = false;
+const clientstart = async () => {
+    if (starting) return;
+    starting = true;
+    try {
+        if (activeSock) {
+            try { activeSock.ev.removeAllListeners(); } catch {}
+            try { activeSock.end(undefined); } catch {}
+            activeSock = null;
+            await new Promise((r) => setTimeout(r, 1500));
+        }
+        activeSock = await startSocket();
+        return activeSock;
+    } catch (e) {
+        console.log(chalk.red('Failed to start the connection, retrying in 5s:'), e?.message || e);
+        setTimeout(clientstart, 5000);
+    } finally {
+        starting = false;
+    }
+};
+
 clientstart();
 
 const ignoredErrors = ['Socket connection timeout', 'Request Timeout', 'EKEYTYPE', 'item-not-found', 'rate-overlimit', 'Connection Closed', 'Timed Out', 'Value not found'];
 
-let file = require.resolve(__filename);
-require('fs').watchFile(file, () => {
-  delete require.cache[file];
-  require(file);
-});
+// (auto-reload of index.js was removed: it started a second bot on the same login. Restart the bot after editing index.js.)
 
 process.on('unhandledRejection', reason => {
     if (ignoredErrors.some(e => String(reason).includes(e))) return;
