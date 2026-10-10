@@ -1,7 +1,8 @@
 // Run bot commands from the server console.
 // A line that starts with "." goes through the same message handler as a WhatsApp
 // message from the owner. Replies are printed in this console instead of being sent
-// to WhatsApp. Anyone who can use the console can run owner commands.
+// to WhatsApp, except media from the commands in SEND_TO_OWNER, which goes to the
+// owner's WhatsApp number. Anyone who can use the console can run owner commands.
 const readline = require('readline');
 const fs = require('fs');
 const path = require('path');
@@ -9,8 +10,9 @@ const crypto = require('crypto');
 
 const config = () => require('../settings/config');
 
-// A fake chat that exists only here. Anything the bot sends to it is printed.
-const TERMINAL_CHAT = 'terminal@local';
+// Console commands whose media is sent to the owner's WhatsApp number.
+const SEND_TO_OWNER = ['x', 'tt', 'ttslide'];
+
 const OUT_DIR = path.join(__dirname, '..', 'terminal-output');
 const MEDIA_KEYS = ['image', 'video', 'audio', 'document', 'sticker'];
 const EXTENSIONS = {
@@ -24,6 +26,12 @@ const EXTENSIONS = {
     'application/pdf': 'pdf',
 };
 
+// Each console command gets its own fake chat, such as "terminal-x@local", so a
+// reply can be traced back to the command that produced it.
+const chatFor = (command) => (command ? `terminal-${command}@local` : 'terminal@local');
+const isTerminalChat = (jid) => typeof jid === 'string' && /^terminal(-[a-z0-9]+)?@local$/.test(jid);
+const commandOf = (jid) => (jid.match(/^terminal-([a-z0-9]+)@local$/) || [])[1] || '';
+
 let activeSock = null;
 let inputStarted = false;
 const wrapped = new WeakSet();
@@ -32,6 +40,8 @@ const ownerJid = () => {
     const owner = String(config().owner || '').replace(/\D/g, '');
     return owner ? owner + '@s.whatsapp.net' : null;
 };
+
+const mediaKind = (content) => MEDIA_KEYS.find((k) => content && content[k] !== undefined) || null;
 
 function saveMedia(buffer, kind, content) {
     fs.mkdirSync(OUT_DIR, { recursive: true });
@@ -43,13 +53,13 @@ function saveMedia(buffer, kind, content) {
     return path.relative(path.join(__dirname, '..'), file);
 }
 
-function printReply(content) {
-    const key = { remoteJid: TERMINAL_CHAT, fromMe: true, id: 'TERM-OUT-' + crypto.randomBytes(4).toString('hex') };
+function printReply(jid, content) {
+    const key = { remoteJid: jid, fromMe: true, id: 'TERM-OUT-' + crypto.randomBytes(4).toString('hex') };
     // Reactions, deletes and edits have nothing to show in a console.
     if (!content || typeof content !== 'object' || content.react || content.delete || content.edit) {
         return { key };
     }
-    const kind = MEDIA_KEYS.find((k) => content[k] !== undefined);
+    const kind = mediaKind(content);
     if (kind) {
         if (content.caption) console.log(content.caption);
         const value = content[kind];
@@ -70,17 +80,38 @@ function printReply(content) {
     return { key, message: content };
 }
 
+// Sends media to the owner's WhatsApp number instead of the console.
+async function sendToOwner(send, command, kind, content) {
+    try {
+        const result = await send(ownerJid(), content);
+        console.log(`[${command}] Sent ${kind} to the owner's WhatsApp number.`);
+        return result;
+    } catch (err) {
+        console.log(`[${command}] Could not send the ${kind} to the owner's WhatsApp number: ${err.message || err}`);
+        return { key: { remoteJid: chatFor(command), fromMe: true, id: 'TERM-ERR' } };
+    }
+}
+
 function wrapSocket(sock) {
     if (wrapped.has(sock)) return;
     wrapped.add(sock);
     const send = sock.sendMessage.bind(sock);
     sock.sendMessage = async (jid, content, options) => {
-        if (jid !== TERMINAL_CHAT) return send(jid, content, options);
+        if (!isTerminalChat(jid)) return send(jid, content, options);
+        const command = commandOf(jid);
+        const kind = mediaKind(content);
+        if (kind && SEND_TO_OWNER.includes(command)) {
+            if (!ownerJid()) {
+                console.log('[terminal] Set the owner number in settings/config.js first.');
+                return { key: { remoteJid: jid, fromMe: true, id: 'TERM-ERR' } };
+            }
+            return sendToOwner(send, command, kind, content);
+        }
         try {
-            return printReply(content);
+            return printReply(jid, content);
         } catch (err) {
             console.log('[terminal] Could not show the reply:', err.message || err);
-            return { key: { remoteJid: TERMINAL_CHAT, fromMe: true, id: 'TERM-ERR' } };
+            return { key: { remoteJid: jid, fromMe: true, id: 'TERM-ERR' } };
         }
     };
 }
@@ -97,11 +128,12 @@ function handleLine(line) {
         console.log('[terminal] Set the owner number in settings/config.js first.');
         return;
     }
+    const command = (text.slice(1).trim().split(/\s+/)[0] || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     // Shaped like a private message from the owner, so the owner check in
     // library/owner.js accepts it. Its chat is the terminal, so replies come back here.
     const message = {
         key: {
-            remoteJid: TERMINAL_CHAT,
+            remoteJid: chatFor(command),
             fromMe: false,
             id: 'TERM-' + Date.now().toString(36) + crypto.randomBytes(3).toString('hex'),
             participant: owner,
