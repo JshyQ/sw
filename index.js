@@ -62,6 +62,7 @@ const { getBuffer } = require('./library/function');
 const { smsg } = require('./library/serialize');
 const { isOwnerMessage } = require('./library/owner');
 const story = require('./library/story');
+const terminal = require('./library/terminal');
 const { videoToWebp, writeExifImg, writeExifVid, addExif, toPTT, toAudio } = require('./library/exif');
 const listcolor = ['cyan', 'magenta', 'green', 'yellow', 'blue'];
 const randomcolor = listcolor[Math.floor(Math.random() * listcolor.length)];
@@ -122,6 +123,7 @@ const startSocket = async () => {
     
     store.bind(sock.ev);
     story.bind(sock);
+    terminal.attach(sock);
     
     const lidMapping = sock.signalRepository.lidMapping;
     
