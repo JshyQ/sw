@@ -1,5 +1,7 @@
 // Story (WhatsApp status) helper.
 // - keeps the list of people who can see your story (your contacts)
+// - optionally restricts that to a specific set of numbers only (see .swaudience) -
+//   when that list is non-empty it REPLACES the contacts list, nobody else sees the story
 // - posts media to status@broadcast WITHOUT re-encoding, so quality stays as-is
 
 const fs = require('fs');
@@ -10,6 +12,7 @@ const { spawn } = require('child_process');
 const config = () => require('../settings/config');
 const FILE = path.join(__dirname, 'database', 'story-audience.json');
 const POSTED_FILE = path.join(__dirname, 'database', 'story-posted.json');
+const RESTRICT_FILE = path.join(__dirname, 'database', 'story-restrict.json');
 
 const audience = new Set();
 try {
@@ -22,6 +25,22 @@ const scheduleSave = () => {
     saveTimer = setTimeout(() => {
         fs.writeFile(FILE, JSON.stringify([...audience]), () => {});
     }, 3000);
+};
+
+// When this has at least one JID in it, it REPLACES the audience above entirely: only these
+// numbers (+ you) go into statusJidList. Empty = normal mode (every contact, from `audience`).
+// Managed from WhatsApp with .swaudience, or edit database/story-restrict.json by hand.
+const restricted = new Set();
+try {
+    for (const jid of JSON.parse(fs.readFileSync(RESTRICT_FILE, 'utf8'))) restricted.add(jid);
+} catch {}
+
+let restrictSaveTimer = null;
+const scheduleRestrictSave = () => {
+    clearTimeout(restrictSaveTimer);
+    restrictSaveTimer = setTimeout(() => {
+        fs.writeFile(RESTRICT_FILE, JSON.stringify([...restricted]), () => {});
+    }, 500);
 };
 
 // Keys of stories we've posted (so we can delete them later, e.g. "delete all my stories").
@@ -76,6 +95,44 @@ const add = (...candidates) => {
 };
 
 const addContact = (c) => c && add(c.phoneNumber, c.id);
+
+// Restricted-audience management (used by .swaudience). Numbers can be bare digits,
+// "62xxx@s.whatsapp.net", or a mentioned JID straight from WhatsApp - toPnJid normalizes all three.
+const addRestricted = (...candidates) => {
+    let changed = false;
+    for (const c of candidates) {
+        const jid = toPnJid(c);
+        if (jid && !restricted.has(jid)) {
+            restricted.add(jid);
+            changed = true;
+        }
+    }
+    if (changed) scheduleRestrictSave();
+    return changed;
+};
+
+const removeRestricted = (...candidates) => {
+    let changed = false;
+    for (const c of candidates) {
+        const jid = toPnJid(c);
+        if (jid && restricted.has(jid)) {
+            restricted.delete(jid);
+            changed = true;
+        }
+    }
+    if (changed) scheduleRestrictSave();
+    return changed;
+};
+
+const clearRestricted = () => {
+    const had = restricted.size > 0;
+    restricted.clear();
+    if (had) scheduleRestrictSave();
+    return had;
+};
+
+const isRestricted = () => restricted.size > 0;
+const listRestricted = () => [...restricted];
 
 const bind = (sock) => {
     sock.ev.on('messaging-history.set', ({ contacts = [] }) => contacts.forEach(addContact));
@@ -301,14 +358,20 @@ const enhanceVideo = async (buffer, opts = {}) => {
 
 const ownJid = (sock) => sock.user.id.split('@')[0].split(':')[0] + '@s.whatsapp.net';
 
-const getAudience = (sock) => [...new Set([ownJid(sock), ...audience])];
+// restricted (if non-empty) REPLACES audience entirely - that's the whole "only these numbers" switch.
+const getAudience = (sock) => {
+    const own = ownJid(sock);
+    const base = restricted.size ? restricted : audience;
+    return [...new Set([own, ...base])];
+};
 
-// Asks WhatsApp which numbers in the audience really exist and drops the rest (saved to disk).
-// A single bad JID in statusJidList makes the whole story fail with "not-acceptable" (406),
-// so this runs automatically when that error happens.
+// Asks WhatsApp which numbers in the active list (restricted if set, else audience) really exist
+// and drops the rest (saved to disk). A single bad JID in statusJidList makes the whole story fail
+// with "not-acceptable" (406), so this runs automatically when that error happens.
 const pruneAudience = async (sock) => {
     const own = ownJid(sock);
-    const list = [...audience].filter((j) => j !== own);
+    const active = restricted.size ? restricted : audience;
+    const list = [...active].filter((j) => j !== own);
     const bad = new Set();
     let checked = 0;
     for (let i = 0; i < list.length; i += 100) {
@@ -322,9 +385,9 @@ const pruneAudience = async (sock) => {
             // lookup failed for this chunk: keep those contacts rather than deleting good ones
         }
     }
-    for (const j of bad) audience.delete(j);
-    if (bad.size) scheduleSave();
-    return { checked, removed: bad.size, remaining: audience.size };
+    for (const j of bad) active.delete(j);
+    if (bad.size) (active === restricted ? scheduleRestrictSave : scheduleSave)();
+    return { checked, removed: bad.size, remaining: active.size };
 };
 
 // buffer must be the ORIGINAL bytes (no resize / re-encode)
@@ -393,5 +456,6 @@ const deleteAllStories = async (sock) => {
 module.exports = {
     bind, add, getAudience, postStory, pruneAudience, splitVideo, remuxVideo, compressVideo, enhanceVideo,
     audienceSize: () => audience.size,
-    listPosted, deleteAllStories
+    listPosted, deleteAllStories,
+    addRestricted, removeRestricted, clearRestricted, isRestricted, listRestricted, toPnJid
 };
