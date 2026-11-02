@@ -4,19 +4,22 @@ const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { makeLog } = require('../library/botlog');
+const log = makeLog('play');
+const config = () => require('../settings/config');
 
-// Cloudflare worker kept as the fallback source; yt-dlp is tried first when present.
 const WORKER = 'https://yt-dl.officialhectormanuel.workers.dev/?url=';
-const MAX_MB = 48;              // refuse anything bigger than this
-const DOC_ABOVE_MB = 14;        // above this, send as a document
-const MAX_DURATION = 900;       // 15 minutes
+const MAX_MB = 48;
+const DOC_ABOVE_MB = 14;
+const MAX_DURATION = 900;
 const MIN_DURATION = 20;
-const TIMEOUT_MS = 240000;
+const TIMEOUT_MS = 300000;
 
 const YT_URL = /https?:\/\/(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)\/\S+/i;
+const AUDIO_EXT = ['.mp3', '.m4a', '.opus', '.webm', '.ogg'];
 
 const busy = new Set();
-const cache = { ytdlp: null, ffmpeg: null };
+const cache = { ytdlp: null, ffmpeg: null, ytmdl: undefined };
 
 // ---------------------------------------------------------------------------
 // Binary lookup. PATH is not trusted: pm2/systemd/screen hand the process a
@@ -31,10 +34,10 @@ const FULL_PATH = (() => {
 
 const env = () => ({ ...process.env, PATH: FULL_PATH });
 
-const probe = (bin) => {
+const probe = (bin, args = ['--version']) => {
     if (!bin || !fs.existsSync(bin)) return false;
     try {
-        return spawnSync(bin, ['--version'], { stdio: 'ignore', env: env(), timeout: 8000 }).status === 0;
+        return spawnSync(bin, args, { stdio: 'ignore', env: env(), timeout: 15000 }).status === 0;
     } catch {
         return false;
     }
@@ -58,7 +61,7 @@ const locate = (names, extra = []) => {
 
 const ytdlpPath = () => {
     if (cache.ytdlp) return cache.ytdlp;
-    const extra = [require('../settings/config')().music?.ytdlpPath];
+    const extra = [config().music?.ytdlpPath];
     try { extra.push(require('yt-dlp-exec').path); } catch {}
     cache.ytdlp = locate(['yt-dlp', 'youtube-dl'], extra.filter(Boolean));
     return cache.ytdlp;
@@ -67,7 +70,7 @@ const ytdlpPath = () => {
 const ffmpegPath = () => {
     if (cache.ffmpeg) return cache.ffmpeg;
     const extra = [
-        require('../settings/config')().story?.ffmpegPath,
+        config().story?.ffmpegPath,
         '/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg', '/snap/bin/ffmpeg', '/opt/homebrew/bin/ffmpeg'
     ];
     try { extra.push(require('@ffmpeg-installer/ffmpeg').path); } catch {}
@@ -75,13 +78,35 @@ const ffmpegPath = () => {
     return cache.ffmpeg;
 };
 
-const run = (bin, args) => new Promise((resolve, reject) => {
+// ytmdl is a Python console script; fall back to `python3 -m ytmdl` if the
+// script is not on PATH but the module is installed.
+const ytmdlCmd = () => {
+    if (cache.ytmdl !== undefined) return cache.ytmdl;
+
+    const bin = locate(['ytmdl'], [config().music?.ytmdlPath].filter(Boolean));
+    if (bin) {
+        cache.ytmdl = { bin, pre: [] };
+        return cache.ytmdl;
+    }
+
+    for (const py of ['python3', 'python']) {
+        if (probe(py, ['-c', 'import ytmdl'])) {
+            cache.ytmdl = { bin: py, pre: ['-m', 'ytmdl'] };
+            return cache.ytmdl;
+        }
+    }
+
+    cache.ytmdl = null;
+    return null;
+};
+
+const run = (bin, args, timeout = TIMEOUT_MS) => new Promise((resolve, reject) => {
     const p = spawn(bin, args, { env: env() });
     let stdout = '';
     let stderr = '';
     p.stdout.on('data', (d) => { stdout += d; });
     p.stderr.on('data', (d) => { stderr = (stderr + d).slice(-4000); });
-    const timer = setTimeout(() => p.kill('SIGKILL'), TIMEOUT_MS);
+    const timer = setTimeout(() => p.kill('SIGKILL'), timeout);
     p.on('error', (e) => { clearTimeout(timer); reject(e); });
     p.on('close', (code) => {
         clearTimeout(timer);
@@ -91,9 +116,7 @@ const run = (bin, args) => new Promise((resolve, reject) => {
 });
 
 // ---------------------------------------------------------------------------
-// Matching. The top hit is usually right for a song name, but not always, so
-// results are scored on how much of the query the title contains, with a nudge
-// for label channels and sane track lengths.
+// Matching. Scored so a remix, cover or hour-long mix does not win by accident.
 // ---------------------------------------------------------------------------
 const norm = (s) => String(s || '')
     .toLowerCase()
@@ -127,10 +150,35 @@ const mmss = (total) => {
     return `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 };
 
+const newestAudio = (dir) => {
+    const files = fs.readdirSync(dir)
+        .filter((f) => AUDIO_EXT.includes(path.extname(f).toLowerCase()))
+        .map((f) => ({ f, at: fs.statSync(path.join(dir, f)).mtimeMs }))
+        .sort((a, b) => b.at - a.at);
+    return files[0] ? path.join(dir, files[0].f) : null;
+};
+
 // ---------------------------------------------------------------------------
-// Sources. yt-dlp gives the best quality and a real MP3; the worker is a plain
-// stream endpoint and is used only when yt-dlp is missing or fails.
+// Sources, in order: ytmdl (tags and cover included), yt-dlp, then the worker.
 // ---------------------------------------------------------------------------
+const grabWithYtmdl = async (url, dir) => {
+    const cmd = ytmdlCmd();
+    if (!cmd) throw new Error('ytmdl not installed');
+
+    const args = [...cmd.pre, '--quiet', '--url', url, '--output-dir', dir];
+    try {
+        await run(cmd.bin, args);
+    } catch (e) {
+        // Older builds may not know --output-dir; retry without it and scan.
+        if (!/unrecognized|no such option|invalid/i.test(e.message)) throw e;
+        await run(cmd.bin, [...cmd.pre, '--quiet', '--url', url]);
+    }
+
+    const file = newestAudio(dir);
+    if (!file) throw new Error('ytmdl produced no file');
+    return { file, tagged: true };
+};
+
 const grabWithYtdlp = async (url, dir) => {
     const bin = ytdlpPath();
     if (!bin) throw new Error('yt-dlp not available');
@@ -144,7 +192,7 @@ const grabWithYtdlp = async (url, dir) => {
 
     const file = fs.readdirSync(dir).find((f) => f.startsWith('audio.'));
     if (!file) throw new Error('yt-dlp produced no file');
-    return path.join(dir, file);
+    return { file: path.join(dir, file), tagged: false };
 };
 
 const grabWithWorker = async (url, dir) => {
@@ -159,10 +207,10 @@ const grabWithWorker = async (url, dir) => {
 
     const file = path.join(dir, 'audio.mp3');
     fs.writeFileSync(file, Buffer.from(res.data));
-    return file;
+    return { file, tagged: false };
 };
 
-// Writes the video thumbnail in as cover art plus ID3 tags. Best effort.
+// Adds thumbnail art and tags to sources that do not supply their own.
 const tagFile = async (input, video, dir) => {
     const ff = ffmpegPath();
     if (!ff || !video.thumbnail) return input;
@@ -228,10 +276,7 @@ module.exports = {
                 const tokens = norm(text).split(' ').filter((t) => t.length > 1);
                 if (!tokens.length) return reply('❌ That query is too short to search on.');
 
-                const ranked = videos
-                    .map((v) => ({ v, s: score(v, tokens) }))
-                    .sort((a, b) => b.s - a.s);
-
+                const ranked = videos.map((v) => ({ v, s: score(v, tokens) })).sort((a, b) => b.s - a.s);
                 if (!ranked[0] || ranked[0].s <= 0) {
                     await sock.sendMessage(m.chat, { react: { text: '🔍', key: m.key } });
                     return reply('🔍 *Search Results*\n\n⚠️ Nothing matched that closely!\n💡 Try artist and title together');
@@ -258,15 +303,21 @@ module.exports = {
 
             dir = fs.mkdtempSync(path.join(os.tmpdir(), 'play-'));
 
-            let file;
-            try {
-                file = await grabWithYtdlp(video.url, dir);
-            } catch (e) {
-                console.warn(`[play] yt-dlp failed (${e.message}), trying the worker`);
-                file = await grabWithWorker(video.url, dir);
+            let got;
+            const sources = [grabWithYtmdl, grabWithYtdlp, grabWithWorker];
+            let lastError;
+            for (const source of sources) {
+                try {
+                    got = await source(video.url, dir);
+                    break;
+                } catch (e) {
+                    lastError = e;
+                    log(`${source.name} failed: ${e.message}`, 'warn');
+                }
             }
+            if (!got) throw lastError || new Error('every source failed');
 
-            file = await tagFile(file, video, dir);
+            const file = got.tagged ? got.file : await tagFile(got.file, video, dir);
 
             const buffer = fs.readFileSync(file);
             const mb = buffer.length / 1024 / 1024;
@@ -306,6 +357,7 @@ module.exports = {
             }
 
             await sock.sendMessage(m.chat, { react: { text: '✅', key: m.key } });
+            log(`Done in ${((Date.now() - t0) / 1000).toFixed(1)}s via ${got.tagged ? 'ytmdl' : 'fallback'}`, 'ok');
         } catch (error) {
             console.error('Error in play command:', error);
             await sock.sendMessage(m.chat, { react: { text: '💥', key: m.key } });
