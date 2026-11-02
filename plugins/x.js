@@ -1,14 +1,21 @@
 const axios = require('axios');
+const cheerio = require('cheerio');
+const crypto = require('crypto');
 
+// ssstwitter.com is the download website this plugin scrapes.
 const BASE_URL = 'https://ssstwitter.com/';
 
-const HEADERS = {
-    'User-Agent':
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36',
-    'Accept':
-        'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.9',
-};
+// ssstwitter's homepage is an htmx app: pasting a link fires an htmx POST to
+// "/" instead of a normal <form> submit. That's why the old version of this
+// file (which looked for a plain <form> tag in the homepage's HTML) never
+// found anything to submit. This is the "current URL" htmx reports back for
+// that POST today — if ssstwitter changes its page again, open the site,
+// watch the Network tab for the POST request to "/", and update this value
+// (and the tt token logic below) to match what the browser actually sends.
+const CURRENT_URL = 'https://ssstwitter.com/en-2';
+
+const USER_AGENT =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 
 function extractTweetUrl(text) {
     const match = text.match(
@@ -18,204 +25,116 @@ function extractTweetUrl(text) {
     return match ? match[0].replace(/[),.!?]+$/, '') : null;
 }
 
-function decodeHtml(value) {
-    return value
-        .replace(/&amp;/g, '&')
-        .replace(/&#38;/g, '&')
-        .replace(/&quot;/g, '"')
-        .replace(/&#39;/g, "'")
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>');
+// ssstwitter's own frontend stamps every submission with a short-lived "tt"
+// token derived from the current unix timestamp. This reproduces it.
+function buildToken(timestampSeconds) {
+    return crypto
+        .createHash('md5')
+        .update(`${timestampSeconds}ssstwitter`)
+        .digest('hex');
 }
 
-function extractVideoLinks(html) {
-    const links = new Set();
+function parseDownloads(html) {
+    const $ = cheerio.load(html);
+    const seen = new Set();
+    const downloads = [];
 
-    const patterns = [
-        /https?:\\?\/\\?\/[^"'\\\s<>]+?\.mp4(?:\?[^"'\\\s<>]*)?/gi,
-        /https?:\/\/[^"'\\\s<>]+?\.mp4(?:\?[^"'\\\s<>]*)?/gi,
-        /https?:\/\/ssscdn\.io\/[^"'\\\s<>]+/gi,
-    ];
+    $('.download-btn, a[href*=".mp4"], a[href*="video.twimg.com"]').each(
+        (_, el) => {
+            const href = $(el).attr('href');
 
-    for (const pattern of patterns) {
-        const matches = html.match(pattern) || [];
-
-        for (let link of matches) {
-            link = link
-                .replace(/\\\//g, '/')
-                .replace(/\\u0026/g, '&')
-                .replace(/\\u003d/g, '=')
-                .replace(/&amp;/g, '&')
-                .replace(/[\\]+$/g, '');
-
-            link = decodeHtml(link);
-
-            if (
-                /^https?:\/\//i.test(link) &&
-                (link.includes('.mp4') || link.includes('ssscdn.io'))
-            ) {
-                links.add(link);
+            if (!href || !/^https?:\/\//i.test(href) || seen.has(href)) {
+                return;
             }
+
+            seen.add(href);
+
+            const label = $(el)
+                .text()
+                .replace(/\s+/g, ' ')
+                .replace(/^download\s*/i, '')
+                .trim();
+
+            downloads.push({
+                quality: label || 'Video',
+                url: href,
+            });
         }
+    );
+
+    if (downloads.length) {
+        return downloads;
     }
 
-    // Also inspect ordinary HTML download links.
-    const anchorRegex =
-        /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
-
+    // Fallback for whenever ssstwitter tweaks its markup again: pull raw
+    // .mp4 links straight out of the response instead of relying on class
+    // names that can change at any time. The backslash-? before each slash
+    // handles links embedded in JSON/script blobs (e.g. "https:\/\/...")
+    // as well as plain HTML.
+    const mp4Pattern =
+        /https?:\\?\/\\?\/[^"'\s<>]+?\.mp4(?:\?[^"'\s<>]*)?/gi;
     let match;
 
-    while ((match = anchorRegex.exec(html)) !== null) {
-        const href = decodeHtml(match[1]);
-        const content = match[2];
+    while ((match = mp4Pattern.exec(html)) !== null) {
+        const link = match[0]
+            .replace(/\\\//g, '/')
+            .replace(/\\u0026/g, '&')
+            .replace(/[\\]+$/g, '');
 
-        if (
-            /^https?:\/\//i.test(href) &&
-            (
-                /\.mp4(?:\?|$)/i.test(href) ||
-                /ssscdn\.io/i.test(href) ||
-                /download|video|mp4/i.test(content)
-            )
-        ) {
-            links.add(href);
+        if (!seen.has(link)) {
+            seen.add(link);
+            downloads.push({ quality: 'Video', url: link });
         }
     }
 
-    return [...links];
+    return downloads;
 }
 
 async function getVideo(tweetUrl) {
-    const client = axios.create({
-        timeout: 30000,
-        maxRedirects: 5,
-        headers: HEADERS,
+    const timestamp = Math.floor(Date.now() / 1000);
+
+    const payload = new URLSearchParams({
+        id: tweetUrl,
+        locale: 'en',
+        tt: buildToken(timestamp),
+        ts: String(timestamp),
+        source: 'form',
     });
 
-    // Load SSSTwitter's homepage.
-    const homepage = await client.get(BASE_URL);
-    const html = homepage.data;
+    const response = await axios.post(BASE_URL, payload.toString(), {
+        timeout: 30000,
+        headers: {
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'User-Agent': USER_AGENT,
+            'Accept-Language': 'en-US,en;q=0.9',
+            'HX-Request': 'true',
+            'HX-Target': 'target',
+            'HX-Current-URL': CURRENT_URL,
+            Origin: 'https://ssstwitter.com',
+            Referer: CURRENT_URL,
+        },
+    });
 
-    // Find the form that accepts the tweet URL.
-    const forms = html.match(/<form\b[\s\S]*?<\/form>/gi) || [];
-
-    let selectedForm = null;
-
-    for (const form of forms) {
-        if (
-            /url|tweet|twitter|link/i.test(form) &&
-            /input/i.test(form)
-        ) {
-            selectedForm = form;
-            break;
-        }
-    }
-
-    if (!selectedForm) {
-        throw new Error(
-            'Could not find the SSSTwitter download form.'
-        );
-    }
-
-    // Read form action and method.
-    const actionMatch = selectedForm.match(
-        /\baction=["']([^"']*)["']/i
-    );
-
-    const methodMatch = selectedForm.match(
-        /\bmethod=["']([^"']*)["']/i
-    );
-
-    const action = actionMatch
-        ? new URL(actionMatch[1], BASE_URL).href
-        : BASE_URL;
-
-    const method = methodMatch
-        ? methodMatch[1].toUpperCase()
-        : 'POST';
-
-    // Collect form inputs, including hidden fields.
-    const data = new URLSearchParams();
-
-    const inputRegex = /<input\b[^>]*>/gi;
-    let input;
-
-    let urlField = null;
-
-    while ((input = inputRegex.exec(selectedForm)) !== null) {
-        const tag = input[0];
-
-        const nameMatch = tag.match(
-            /\bname=["']([^"']+)["']/i
-        );
-
-        const valueMatch = tag.match(
-            /\bvalue=["']([^"']*)["']/i
-        );
-
-        if (!nameMatch) continue;
-
-        const name = nameMatch[1];
-        const value = valueMatch ? valueMatch[1] : '';
-
-        if (/url|tweet|twitter|link/i.test(name)) {
-            urlField = name;
-        }
-
-        if (/hidden/i.test(tag)) {
-            data.append(name, value);
-        }
-    }
-
-    // Find a URL field from the form's textarea if necessary.
-    if (!urlField) {
-        const textareaMatch = selectedForm.match(
-            /<textarea\b[^>]*name=["']([^"']+)["']/i
-        );
-
-        if (textareaMatch) {
-            urlField = textareaMatch[1];
-        }
-    }
-
-    if (!urlField) {
-        throw new Error(
-            'Could not identify SSSTwitter URL input.'
-        );
-    }
-
-    data.set(urlField, tweetUrl);
-
-    const requestHeaders = {
-        ...HEADERS,
-        Referer: BASE_URL,
-        Origin: new URL(BASE_URL).origin,
-        'Content-Type': 'application/x-www-form-urlencoded',
-    };
-
-    // Submit the tweet URL.
-    const response = method === 'GET'
-        ? await client.get(action, {
-            params: Object.fromEntries(data.entries()),
-            headers: requestHeaders,
-        })
-        : await client.post(action, data.toString(), {
-            headers: requestHeaders,
-        });
-
-    const resultHtml =
+    const html =
         typeof response.data === 'string'
             ? response.data
             : JSON.stringify(response.data);
 
-    const videos = extractVideoLinks(resultHtml);
-
-    if (!videos.length) {
+    if (/just a moment|cf-chl|attention required/i.test(html)) {
         throw new Error(
-            'SSSTwitter did not return a downloadable MP4 link. The website may have changed its form or require JavaScript.'
+            'SSSTwitter returned a security check instead of a result. This can happen when requests come from a flagged server IP — try again shortly.'
         );
     }
 
-    return videos[0];
+    const downloads = parseDownloads(html);
+
+    if (!downloads.length) {
+        throw new Error(
+            'SSSTwitter did not return a downloadable MP4 link. The post may have no video, be private, or SSSTwitter changed its page again.'
+        );
+    }
+
+    return downloads.find((d) => /\bhd\b/i.test(d.quality)) || downloads[0];
 }
 
 module.exports = {
@@ -245,26 +164,24 @@ module.exports = {
 
         await sock.sendMessage(
             jid,
-            {
-                text: 'Downloading Twitter video...',
-            },
+            { text: 'Downloading Twitter video...' },
             { quoted: msg }
         );
 
         try {
-            const videoUrl = await getVideo(tweetUrl);
+            const video = await getVideo(tweetUrl);
 
             await sock.sendMessage(
                 jid,
                 {
-                    video: { url: videoUrl },
+                    video: { url: video.url },
                     mimetype: 'video/mp4',
-                    caption: 'Downloaded from SSSTwitter.',
+                    caption: `Downloaded from SSSTwitter (${video.quality}).`,
                 },
                 { quoted: msg }
             );
         } catch (error) {
-            console.error('[SSSTWITTER ERROR]', error);
+            console.error('[SSSTWITTER ERROR]', error?.message || error);
 
             await sock.sendMessage(
                 jid,
@@ -274,7 +191,7 @@ module.exports = {
                         'Possible reasons:\n' +
                         '- The post does not contain a video.\n' +
                         '- The post is private or unavailable.\n' +
-                        '- SSSTwitter changed its download form or requires JavaScript.\n\n' +
+                        '- SSSTwitter changed its page again.\n\n' +
                         'Try again later.',
                 },
                 { quoted: msg }
