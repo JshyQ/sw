@@ -1,11 +1,6 @@
 const axios = require('axios');
-const { spawn, spawnSync } = require('child_process');
-const fs = require('fs');
-const os = require('os');
-const path = require('path');
 const { makeLog, secs } = require('../library/botlog');
 const log = makeLog('x');
-const config = () => require('../settings/config');
 
 // Matches x.com / twitter.com (+ mobile., www.) and the fxtwitter / vxtwitter mirrors.
 const X_LINK = /https?:\/\/(?:www\.|mobile\.|m\.)?(?:x\.com|twitter\.com|fxtwitter\.com|vxtwitter\.com|fixupx\.com)\/[^\s]+/i;
@@ -14,17 +9,15 @@ const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML,
 
 const SITE = 'https://ssstwitter.com/';
 
-const MAX_MB = 100;        // refuse anything bigger than this
-const DOC_ABOVE_MB = 60;   // above this, send as a document so WhatsApp doesn't choke on it
+// Nothing is re-encoded: the highest rendition X offers is sent byte for byte.
+// A cap only affects which rendition is chosen, never the file itself.
+const QUALITY_CAP = 0;     // 0 = no cap, send the sharpest available. Set to 720 to prefer 720p.
+const MAX_MB = 500;        // refuse anything bigger than this
+const DOC_ABOVE_MB = 16;   // above this, a document is the only way to avoid WhatsApp's own re-encode
 
-// Quality rule: the highest resolution X offers, never above 720p, at about the same
-// file size as the earlier 480p downloads (roughly 840 kbps in total, audio included).
-const MAX_SHORT_SIDE = 720;        // the shorter side of the picture is capped at 720 pixels
-const KEEP_ORIGINAL_MAX_P = 480;   // anything at or below this is small enough to send unchanged
-const KEEP_ORIGINAL_MAX_MB = 8;    // ...or this small, whatever the resolution
-const VIDEO_KBPS = 700;            // target video bitrate when the file is re-encoded
-const VIDEO_MAX_KBPS = 776;        // peak video bitrate, so the file cannot grow past the target
-const AUDIO_KBPS = 64;
+// Send every video as a document. WhatsApp recompresses video messages, which is
+// exactly the quality loss being avoided here, so the default is off for that path.
+const ALWAYS_DOCUMENT = true;
 
 const LIMIT_RETRY_MS = 12000;
 const LIMIT_ATTEMPTS = 2;
@@ -77,12 +70,12 @@ const buttonsIn = (html) => {
     return out;
 };
 
-// Highest resolution that is still at or below the 720p ceiling; if the tweet only
-// has sharper files, the lowest of those, so the re-encode shrinks it the least.
+// Sharpest rendition available. The quality-best class is the site's own marker for
+// its top file, used only when the labels on the buttons cannot be read.
 const pickBest = (buttons) => {
     const known = buttons.filter((b) => b.quality);
-    const under = known.filter((b) => b.quality <= MAX_SHORT_SIDE);
-    if (under.length) return under.sort((a, b) => b.quality - a.quality)[0];
+    const usable = QUALITY_CAP ? known.filter((b) => b.quality <= QUALITY_CAP) : known;
+    if (usable.length) return usable.sort((a, b) => b.quality - a.quality)[0];
     if (known.length) return known.sort((a, b) => a.quality - b.quality)[0];
     return buttons.find((b) => b.hinted) || buttons[0] || null;
 };
@@ -185,70 +178,9 @@ const captionFromFx = async (tweetUrl) => {
     }
 };
 
-// ---------------------------------------------------------------------------
-// Re-encoding with ffmpeg. The bot looks for ffmpeg in the same order as its other
-// plugins: config.story.ffmpegPath, then the system ffmpeg, then the bundled binary.
-// ---------------------------------------------------------------------------
-const ffmpegPath = () => {
-    const candidates = [config().story?.ffmpegPath, 'ffmpeg'].filter(Boolean);
-    try { candidates.push(require('@ffmpeg-installer/ffmpeg').path); } catch {}
-    for (const bin of candidates) {
-        try {
-            if (spawnSync(bin, ['-version']).status === 0) return bin;
-        } catch {}
-    }
-    throw new Error('ffmpeg was not found on the server');
-};
-
-// Keeps the picture at its size but never above 720p. H.264 needs even sizes.
-const scaleFilter = (width, height) => {
-    if (width && height && Math.min(width, height) > MAX_SHORT_SIDE) {
-        return width >= height ? 'scale=-2:720' : 'scale=720:-2';
-    }
-    return 'scale=trunc(iw/2)*2:trunc(ih/2)*2';
-};
-
-const runFfmpeg = (bin, args) => new Promise((resolve, reject) => {
-    const p = spawn(bin, args);
-    let stderr = '';
-    p.stderr.on('data', (d) => { stderr = (stderr + d).slice(-2000); });
-    const timer = setTimeout(() => p.kill('SIGKILL'), 180000);
-    p.on('error', (e) => { clearTimeout(timer); reject(e); });
-    p.on('close', (code) => {
-        clearTimeout(timer);
-        if (code === 0) return resolve();
-        const last = stderr.trim().split('\n').pop() || 'no details';
-        reject(new Error(`ffmpeg exited with code ${code}: ${last}`));
-    });
-});
-
-const reencode = async (input, info) => {
-    const bin = ffmpegPath();
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'x-video-'));
-    try {
-        const inFile = path.join(dir, 'in.mp4');
-        const outFile = path.join(dir, 'out.mp4');
-        fs.writeFileSync(inFile, input);
-        await runFfmpeg(bin, [
-            '-hide_banner', '-loglevel', 'error', '-y',
-            '-i', inFile,
-            '-map', '0:v:0', '-map', '0:a:0?',
-            '-vf', scaleFilter(info.width, info.height),
-            '-c:v', 'libx264', '-preset', 'veryfast', '-profile:v', 'main', '-pix_fmt', 'yuv420p',
-            '-b:v', `${VIDEO_KBPS}k`, '-maxrate', `${VIDEO_MAX_KBPS}k`, '-bufsize', `${VIDEO_MAX_KBPS * 2}k`,
-            '-c:a', 'aac', '-b:a', `${AUDIO_KBPS}k`,
-            '-movflags', '+faststart',
-            outFile
-        ]);
-        return fs.readFileSync(outFile);
-    } finally {
-        fs.rmSync(dir, { recursive: true, force: true });
-    }
-};
-
 module.exports = {
     command: 'x',
-    description: 'Download an X (Twitter) video in HD (up to 720p) at about the same file size',
+    description: 'Download an X (Twitter) video at full quality, untouched',
     category: 'downloader',
     execute: async (sock, m, { text, reply, prefix }) => {
         const link = ((text || '').match(X_LINK) || [])[0];
@@ -268,7 +200,7 @@ module.exports = {
         try {
             log('Resolving through ssstwitter...');
             const found = await fetchFromSsstwitter(link);
-            info = { ...found, width: 0, height: found.quality || 0, caption: null, source: 'ssstwitter' };
+            info = { ...found, caption: null, source: 'ssstwitter' };
             log(`Got video link from ssstwitter${info.qualityLabel ? ` (${info.qualityLabel})` : ''}`, 'ok');
         } catch (e) {
             log(`ssstwitter failed: ${e.message}`, 'warn');
@@ -284,8 +216,9 @@ module.exports = {
             const res = await axios.get(info.url, {
                 responseType: 'arraybuffer',
                 headers: { 'User-Agent': UA, Referer: SITE },
-                timeout: 90000,
-                maxContentLength: MAX_MB * 1024 * 1024
+                timeout: 120000,
+                maxContentLength: MAX_MB * 1024 * 1024,
+                maxBodyLength: MAX_MB * 1024 * 1024
             });
             buffer = Buffer.from(res.data);
             log(`Video downloaded: ${(buffer.length / 1024 / 1024).toFixed(2)} MB in ${secs(t0)}`, 'ok');
@@ -295,28 +228,16 @@ module.exports = {
             return reply(`Download failed: ${e.message}`);
         }
 
-        // Send the file unchanged when it is already small; re-encode anything bigger or sharper.
-        const keepOriginal = info.quality
-            ? info.quality <= KEEP_ORIGINAL_MAX_P
-            : buffer.length <= KEEP_ORIGINAL_MAX_MB * 1024 * 1024;
-
-        if (!keepOriginal) {
-            log(`Re-encoding to 720p max, about ${VIDEO_KBPS + AUDIO_KBPS} kbps (file was ${(buffer.length / 1024 / 1024).toFixed(2)} MB)...`);
-            try {
-                buffer = await reencode(buffer, info);
-                log(`Re-encoded: ${(buffer.length / 1024 / 1024).toFixed(2)} MB in ${secs(t0)}`, 'ok');
-            } catch (e) {
-                log(`Re-encode failed: ${e.message}`, 'err');
-                await sock.sendMessage(m.chat, { react: { text: '❌', key: m.key } });
-                return reply(`Couldn't process that video: ${e.message}`);
-            }
+        const mb = buffer.length / 1024 / 1024;
+        if (mb > MAX_MB) {
+            await sock.sendMessage(m.chat, { react: { text: '❌', key: m.key } });
+            return reply(`That file is ${mb.toFixed(1)} MB, over the ${MAX_MB} MB limit.`);
         }
 
-        const mb = buffer.length / 1024 / 1024;
         const caption = info.caption ? info.caption.slice(0, 900) : undefined;
 
-        log('Sending to chat...');
-        if (mb > DOC_ABOVE_MB) {
+        log(`Sending to chat as ${ALWAYS_DOCUMENT || mb > DOC_ABOVE_MB ? 'document' : 'video'}...`);
+        if (ALWAYS_DOCUMENT || mb > DOC_ABOVE_MB) {
             await sock.sendMessage(m.chat, {
                 document: buffer,
                 mimetype: 'video/mp4',
