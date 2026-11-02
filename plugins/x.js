@@ -1,363 +1,284 @@
-
 const axios = require('axios');
 
-const BASE_URL = 'https://twittervideodownloader.com';
-const PAGE_URL = `${BASE_URL}/en/`;
+const BASE_URL = 'https://ssstwitter.com/';
 
-const USER_AGENT =
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+const HEADERS = {
+    'User-Agent':
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36',
+    'Accept':
+        'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+};
 
-// Decode HTML entities
-function decodeHTML(str = '') {
-    return str
-        .replace(/&amp;/g, '&')
-        .replace(/&quot;/g, '"')
-        .replace(/&#39;|&apos;/g, "'")
-        .replace(/&lt;/g, '<')
-        .replace(/&gt;/g, '>')
-        .replace(/&#x2F;/gi, '/')
-        .replace(/&#(\d+);/g, (_, n) =>
-            String.fromCodePoint(Number(n))
-        )
-        .replace(/&#x([0-9a-f]+);/gi, (_, n) =>
-            String.fromCodePoint(parseInt(n, 16))
-        );
-}
-
-// Extract HTML attributes
-function getAttribute(html, name) {
-    const regex = new RegExp(
-        `${name}\\s*=\\s*["']([^"']*)["']`,
-        'i'
+function extractTweetUrl(text) {
+    const match = text.match(
+        /https?:\/\/(?:www\.)?(?:x\.com|twitter\.com)\/[^\s]+/i
     );
 
-    return html.match(regex)?.[1] || '';
+    return match ? match[0].replace(/[),.!?]+$/, '') : null;
 }
 
-// Validate Twitter/X URL
-function validateTweetURL(tweetUrl) {
-    try {
-        const url = new URL(tweetUrl);
+function decodeHtml(value) {
+    return value
+        .replace(/&amp;/g, '&')
+        .replace(/&#38;/g, '&')
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>');
+}
 
-        const allowedHosts = [
-            'twitter.com',
-            'www.twitter.com',
-            'mobile.twitter.com',
-            'x.com',
-            'www.x.com'
-        ];
+function extractVideoLinks(html) {
+    const links = new Set();
 
-        if (!['http:', 'https:'].includes(url.protocol)) {
-            return false;
+    const patterns = [
+        /https?:\\?\/\\?\/[^"'\\\s<>]+?\.mp4(?:\?[^"'\\\s<>]*)?/gi,
+        /https?:\/\/[^"'\\\s<>]+?\.mp4(?:\?[^"'\\\s<>]*)?/gi,
+        /https?:\/\/ssscdn\.io\/[^"'\\\s<>]+/gi,
+    ];
+
+    for (const pattern of patterns) {
+        const matches = html.match(pattern) || [];
+
+        for (let link of matches) {
+            link = link
+                .replace(/\\\//g, '/')
+                .replace(/\\u0026/g, '&')
+                .replace(/\\u003d/g, '=')
+                .replace(/&amp;/g, '&')
+                .replace(/[\\]+$/g, '');
+
+            link = decodeHtml(link);
+
+            if (
+                /^https?:\/\//i.test(link) &&
+                (link.includes('.mp4') || link.includes('ssscdn.io'))
+            ) {
+                links.add(link);
+            }
         }
-
-        if (!allowedHosts.includes(url.hostname.toLowerCase())) {
-            return false;
-        }
-
-        return /\/status\/\d+/.test(url.pathname);
-    } catch {
-        return false;
     }
-}
 
-// Extract video links from the returned HTML
-function extractVideos(html) {
-    const results = [];
-
-    const anchorRegex = /<a\b[^>]*>[\s\S]*?<\/a>/gi;
+    // Also inspect ordinary HTML download links.
+    const anchorRegex =
+        /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
 
     let match;
 
     while ((match = anchorRegex.exec(html)) !== null) {
-        const anchor = match[0];
-
-        const href = getAttribute(anchor, 'href');
-
-        if (!href) continue;
-
-        let videoURL;
-
-        try {
-            videoURL = new URL(decodeHTML(href), BASE_URL);
-        } catch {
-            continue;
-        }
-
-        if (!['http:', 'https:'].includes(videoURL.protocol)) {
-            continue;
-        }
-
-        const label = decodeHTML(
-            anchor
-                .replace(/<[^>]*>/g, ' ')
-                .replace(/\s+/g, ' ')
-                .trim()
-        );
-
-        const isTwitterCDN =
-            videoURL.hostname === 'video.twimg.com';
-
-        const isDownloadLink =
-            /download\s*(video|mp4)?/i.test(label);
-
-        if (!isTwitterCDN && !isDownloadLink) {
-            continue;
-        }
+        const href = decodeHtml(match[1]);
+        const content = match[2];
 
         if (
-            videoURL.hostname === 'twittervideodownloader.com' ||
-            videoURL.hostname.endsWith('.twittervideodownloader.com')
+            /^https?:\/\//i.test(href) &&
+            (
+                /\.mp4(?:\?|$)/i.test(href) ||
+                /ssscdn\.io/i.test(href) ||
+                /download|video|mp4/i.test(content)
+            )
         ) {
-            continue;
-        }
-
-        if (!results.some(item => item.url === videoURL.href)) {
-            results.push({
-                quality: label || 'Twitter Video',
-                url: videoURL.href
-            });
+            links.add(href);
         }
     }
 
-    // Prefer higher resolutions when quality labels contain them
-    results.sort((a, b) => {
-        const getResolution = item =>
-            Number(item.quality.match(/(\d{3,4})p/i)?.[1] || 0);
+    return [...links];
+}
 
-        return getResolution(b) - getResolution(a);
+async function getVideo(tweetUrl) {
+    const client = axios.create({
+        timeout: 30000,
+        maxRedirects: 5,
+        headers: HEADERS,
     });
 
-    return results;
-}
+    // Load SSSTwitter's homepage.
+    const homepage = await client.get(BASE_URL);
+    const html = homepage.data;
 
-// Download Twitter video through TwitterVideoDownloader
-async function downloadTwitterVideo(tweetUrl) {
-    try {
-        if (!validateTweetURL(tweetUrl)) {
-            throw new Error('Invalid Twitter/X post URL.');
+    // Find the form that accepts the tweet URL.
+    const forms = html.match(/<form\b[\s\S]*?<\/form>/gi) || [];
+
+    let selectedForm = null;
+
+    for (const form of forms) {
+        if (
+            /url|tweet|twitter|link/i.test(form) &&
+            /input/i.test(form)
+        ) {
+            selectedForm = form;
+            break;
+        }
+    }
+
+    if (!selectedForm) {
+        throw new Error(
+            'Could not find the SSSTwitter download form.'
+        );
+    }
+
+    // Read form action and method.
+    const actionMatch = selectedForm.match(
+        /\baction=["']([^"']*)["']/i
+    );
+
+    const methodMatch = selectedForm.match(
+        /\bmethod=["']([^"']*)["']/i
+    );
+
+    const action = actionMatch
+        ? new URL(actionMatch[1], BASE_URL).href
+        : BASE_URL;
+
+    const method = methodMatch
+        ? methodMatch[1].toUpperCase()
+        : 'POST';
+
+    // Collect form inputs, including hidden fields.
+    const data = new URLSearchParams();
+
+    const inputRegex = /<input\b[^>]*>/gi;
+    let input;
+
+    let urlField = null;
+
+    while ((input = inputRegex.exec(selectedForm)) !== null) {
+        const tag = input[0];
+
+        const nameMatch = tag.match(
+            /\bname=["']([^"']+)["']/i
+        );
+
+        const valueMatch = tag.match(
+            /\bvalue=["']([^"']*)["']/i
+        );
+
+        if (!nameMatch) continue;
+
+        const name = nameMatch[1];
+        const value = valueMatch ? valueMatch[1] : '';
+
+        if (/url|tweet|twitter|link/i.test(name)) {
+            urlField = name;
         }
 
-        const session = axios.create({
-            timeout: 30000,
-            maxRedirects: 5,
-            headers: {
-                'User-Agent': USER_AGENT,
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
-            }
+        if (/hidden/i.test(tag)) {
+            data.append(name, value);
+        }
+    }
+
+    // Find a URL field from the form's textarea if necessary.
+    if (!urlField) {
+        const textareaMatch = selectedForm.match(
+            /<textarea\b[^>]*name=["']([^"']+)["']/i
+        );
+
+        if (textareaMatch) {
+            urlField = textareaMatch[1];
+        }
+    }
+
+    if (!urlField) {
+        throw new Error(
+            'Could not identify SSSTwitter URL input.'
+        );
+    }
+
+    data.set(urlField, tweetUrl);
+
+    const requestHeaders = {
+        ...HEADERS,
+        Referer: BASE_URL,
+        Origin: new URL(BASE_URL).origin,
+        'Content-Type': 'application/x-www-form-urlencoded',
+    };
+
+    // Submit the tweet URL.
+    const response = method === 'GET'
+        ? await client.get(action, {
+            params: Object.fromEntries(data.entries()),
+            headers: requestHeaders,
+        })
+        : await client.post(action, data.toString(), {
+            headers: requestHeaders,
         });
 
-        // STEP 1: Open downloader website
-        const page = await session.get(PAGE_URL);
+    const resultHtml =
+        typeof response.data === 'string'
+            ? response.data
+            : JSON.stringify(response.data);
 
-        const html = page.data;
+    const videos = extractVideoLinks(resultHtml);
 
-        // Get cookies
-        const cookies = page.headers['set-cookie'] || [];
-
-        const cookieString = cookies
-            .map(cookie => cookie.split(';')[0])
-            .join('; ');
-
-        // Get CSRF token
-        const csrfCookie = cookies.find(cookie =>
-            cookie.startsWith('csrftoken=')
+    if (!videos.length) {
+        throw new Error(
+            'SSSTwitter did not return a downloadable MP4 link. The website may have changed its form or require JavaScript.'
         );
-
-        const csrfToken = csrfCookie
-            ? csrfCookie.split(';')[0].split('=').slice(1).join('=')
-            : '';
-
-        // STEP 2: Find the website's download form
-        const formMatch = html.match(
-            /<form\b[^>]*>[\s\S]*?<\/form>/i
-        );
-
-        const formHTML = formMatch ? formMatch[0] : '';
-
-        const openingForm = formHTML.match(/<form\b[^>]*>/i)?.[0] || '';
-
-        let action = getAttribute(openingForm, 'action');
-
-        // Historical downloader endpoint fallback
-        if (!action) {
-            action = '/download';
-        }
-
-        const submitURL = new URL(action, PAGE_URL).href;
-
-        // Find the tweet input field
-        const inputMatches = formHTML.match(/<input\b[^>]*>/gi) || [];
-
-        let tweetField = 'tweet';
-
-        for (const input of inputMatches) {
-            const name = getAttribute(input, 'name');
-            const type = getAttribute(input, 'type');
-
-            if (
-                name &&
-                ['text', 'url', 'search'].includes(type.toLowerCase()) &&
-                !/csrf/i.test(name)
-            ) {
-                tweetField = name;
-                break;
-            }
-        }
-
-        // STEP 3: Prepare form data
-        const formData = new URLSearchParams();
-
-        formData.append(tweetField, tweetUrl);
-
-        // Preserve hidden form fields
-        for (const input of inputMatches) {
-            const name = getAttribute(input, 'name');
-            const value = getAttribute(input, 'value');
-            const type = getAttribute(input, 'type');
-
-            if (
-                name &&
-                type.toLowerCase() === 'hidden' &&
-                name !== tweetField
-            ) {
-                formData.append(name, value);
-            }
-        }
-
-        if (
-            csrfToken &&
-            !formData.has('csrfmiddlewaretoken')
-        ) {
-            formData.append('csrfmiddlewaretoken', csrfToken);
-        }
-
-        // STEP 4: Submit tweet URL
-        const response = await session.post(
-            submitURL,
-            formData.toString(),
-            {
-                headers: {
-                    'Content-Type': 'application/x-www-form-urlencoded',
-                    'User-Agent': USER_AGENT,
-                    'Referer': PAGE_URL,
-                    'Origin': BASE_URL,
-                    'Cookie': cookieString,
-                    ...(csrfToken
-                        ? { 'X-CSRFToken': csrfToken }
-                        : {})
-                },
-                maxRedirects: 5
-            }
-        );
-
-        if (typeof response.data !== 'string') {
-            throw new Error('Unexpected response from downloader website.');
-        }
-
-        // STEP 5: Extract downloadable video links
-        const results = extractVideos(response.data);
-
-        if (!results.length) {
-            if (/private|protected/i.test(response.data)) {
-                throw new Error(
-                    'This tweet is private or protected.'
-                );
-            }
-
-            if (/no video|video not found|unable to find/i.test(response.data)) {
-                throw new Error(
-                    'No downloadable video was found in this tweet.'
-                );
-            }
-
-            throw new Error(
-                'The website did not return any video links. Its form or response may have changed.'
-            );
-        }
-
-        return {
-            status: true,
-            source: 'twittervideodownloader.com',
-            tweetUrl,
-            results
-        };
-
-    } catch (error) {
-        console.error('[X Downloader]', error.message);
-
-        return {
-            status: false,
-            error: error.response
-                ? `Downloader returned HTTP ${error.response.status}.`
-                : error.message || 'Failed to download Twitter video.'
-        };
     }
+
+    return videos[0];
 }
 
-// WhatsApp plugin
 module.exports = {
     command: 'x',
     aliases: ['twitter', 'twitterdl'],
-    description: 'Download Twitter/X videos',
+    description: 'Download public Twitter/X videos using SSSTwitter',
     category: 'downloader',
 
-    execute: async (sock, m, {
-        args,
-        text,
-        reply
-    }) => {
-        const tweetUrl = (
-            args?.[0] || text || ''
-        ).trim().split(/\s+/)[0];
+    async execute(sock, msg, args) {
+        const jid = msg.key.remoteJid;
 
-        if (!tweetUrl || !validateTweetURL(tweetUrl)) {
-            return reply(
-                '❌ Please provide a valid Twitter/X post URL.\n\n' +
-                'Example:\n' +
-                '.x https://x.com/user/status/123456789'
+        const input = Array.isArray(args)
+            ? args.join(' ')
+            : String(args || '');
+
+        const tweetUrl = extractTweetUrl(input);
+
+        if (!tweetUrl) {
+            return sock.sendMessage(
+                jid,
+                {
+                    text: 'Please provide a valid X/Twitter post link.\n\nExample: .x https://x.com/user/status/123456789',
+                },
+                { quoted: msg }
             );
         }
 
-        await reply(
-            '⏳ Fetching Twitter video...\n' +
-            'Please wait.'
+        await sock.sendMessage(
+            jid,
+            {
+                text: 'Downloading Twitter video...',
+            },
+            { quoted: msg }
         );
 
-        const result = await downloadTwitterVideo(tweetUrl);
-
-        if (!result.status || !result.results.length) {
-            return reply(
-                `❌ Download failed!\n\n${result.error}`
-            );
-        }
-
-        const bestVideo = result.results[0];
-
         try {
+            const videoUrl = await getVideo(tweetUrl);
+
             await sock.sendMessage(
-                m.chat,
+                jid,
                 {
-                    video: {
-                        url: bestVideo.url
-                    },
+                    video: { url: videoUrl },
                     mimetype: 'video/mp4',
-                    caption:
-                        '✅ Twitter Video Downloaded\n\n' +
-                        `📥 Source: TwitterVideoDownloader\n` +
-                        `🎬 Quality: ${bestVideo.quality}`
+                    caption: 'Downloaded from SSSTwitter.',
                 },
-                {
-                    quoted: m
-                }
+                { quoted: msg }
             );
-
         } catch (error) {
-            console.error('[X Send Error]', error);
+            console.error('[SSSTWITTER ERROR]', error);
 
-            await reply(
-                '❌ Video was extracted, but WhatsApp failed to send it.'
+            await sock.sendMessage(
+                jid,
+                {
+                    text:
+                        'Failed to download this video.\n\n' +
+                        'Possible reasons:\n' +
+                        '- The post does not contain a video.\n' +
+                        '- The post is private or unavailable.\n' +
+                        '- SSSTwitter changed its download form or requires JavaScript.\n\n' +
+                        'Try again later.',
+                },
+                { quoted: msg }
             );
         }
-    }
+    },
 };
