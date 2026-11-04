@@ -53,6 +53,7 @@ const loadBaileys = async () => {
 const pino = require('pino');
 const FileType = require('file-type');
 const readline = require("readline");
+const qrcode = require('qrcode-terminal');
 const fs = require('fs');
 const chalk = require("chalk");
 const path = require("path");
@@ -76,14 +77,14 @@ const question = (text) => {
 
 const startSocket = async () => {
     await loadBaileys();
-    
+
     const browserOptions = [
         Browsers.macOS('Safari'), Browsers.macOS('Chrome'), Browsers.windows('Firefox'),
         Browsers.ubuntu('Chrome'), Browsers.baileys('Baileys'), Browsers.macOS('Edge'),
         Browsers.windows('Edge')
     ];
     const randomBrowser = browserOptions[Math.floor(Math.random() * browserOptions.length)];
-    
+
     const store = {
         messages: new Map(),
         contacts: new Map(),
@@ -98,35 +99,32 @@ const startSocket = async () => {
             ev.on('lid-mapping.update', ({ mappings }) => console.log(chalk.cyan('📋 LID Mapping Update:'), mappings));
         }
     };
-    
+
     const { state, saveCreds } = await useMultiFileAuthState(`./${config().session}`);
     const { version, isLatest } = await fetchLatestBaileysVersion();
-    
+
     const sock = makeWASocket({
         logger: pino({ level: "silent" }),
-        printQRInTerminal: !config().status.terminal,
+        printQRInTerminal: false,
         auth: state,
         version: version,
         browser: randomBrowser,
-        syncFullHistory: false, // don't pull old chat history on connect/reconnect — less to replay after being offline
+        syncFullHistory: false,
         shouldSyncHistoryMessage: () => false,
-        defaultQueryTimeoutMs: 180000, // default is 60000, too short for story uploads
+        defaultQueryTimeoutMs: 180000,
         connectTimeoutMs: 120000,
         keepAliveIntervalMs: 20000
     });
-    
-    if (config().status.terminal && !sock.authState.creds.registered) {
-        const phoneNumber = await question('enter the WhatsApp number to link (country code first, e.g. 6285111606001):\nnumber WhatsApp: ');
-        const code = await sock.requestPairingCode(phoneNumber);
-        console.log(chalk.green(`your pairing code: ` + chalk.bold.green(code)));
-    }
-    
+
+    // For a fresh session, Baileys emits a QR string through connection.update.
+    // It is rendered below with qrcode-terminal; no phone-number pairing code is requested.
+
     store.bind(sock.ev);
     story.bind(sock);
     terminal.attach(sock);
-    
+
     const lidMapping = sock.signalRepository.lidMapping;
-    
+
     sock.getLIDForPN = async (phoneNumber) => {
         try { return await lidMapping.getLIDForPN(phoneNumber); } catch {}
         return null;
@@ -141,7 +139,7 @@ const startSocket = async () => {
             console.log(chalk.green(`✓ Stored LID<->PN mapping: ${lid} <-> ${phoneNumber}`));
         } catch {}
     };
-    
+
     sock.ev.on('creds.update', saveCreds);
     sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
@@ -153,8 +151,11 @@ const startSocket = async () => {
             }).catch(console.error);
         }
         if (connection === 'close') console.log(chalk.red('❌ Connection closed:'), lastDisconnect?.error?.message);
-        if (qr) console.log(chalk.blue('📱 Scan the QR code above to connect.'));
-        
+        if (qr) {
+            console.log(chalk.cyan('📱 Scan this QR code with WhatsApp > Linked devices > Link a device:'));
+            qrcode.generate(qr, { small: true });
+        }
+
         const { konek } = require('./library/connection/connection');
         konek({ sock, update, clientstart, DisconnectReason, Boom });
     });
@@ -164,21 +165,21 @@ const startSocket = async () => {
             const mek = chatUpdate.messages[0];
             if (!mek.message) return;
             mek.message = Object.keys(mek.message)[0] === 'ephemeralMessage' ? mek.message.ephemeralMessage.message : mek.message;
-            
+
             if (config().status.reactsw && mek.key && mek.key.remoteJid === 'status@broadcast') {
                 let emoji = ['😘', '😭', '😂', '😹', '😍', '😋', '🙏', '😜', '😢', '😠', '🤫', '😎'];
                 let sigma = emoji[Math.floor(Math.random() * emoji.length)];
                 await sock.readMessages([mek.key]);
                 await sock.sendMessage('status@broadcast', { react: { text: sigma, key: mek.key } }, { statusJidList: [mek.key.participant] });
             }
-            
+
             if (chatUpdate.type !== 'notify') return;
             if (mek.key.remoteJid === 'status@broadcast') return;
             const ageSec = Date.now() / 1000 - Number(mek.messageTimestamp || 0);
             if (ageSec > 180) return;
             if (!(await isOwnerMessage(sock, mek))) return;
             if (mek.key.id.startsWith('BASE-') && mek.key.id.length === 12) return;
-            
+
             const m = await smsg(sock, mek, store);
             m.isOwner = true;
             require("./message")(sock, m, chatUpdate, store);
@@ -201,7 +202,7 @@ const startSocket = async () => {
     });
 
     sock.public = false;
-    
+
     sock.sendText = async (jid, text, quoted = '', options) => sock.sendMessage(jid, { text, ...options }, { quoted });
     sock.downloadMediaMessage = async (message) => {
         let mime = (message.msg || message).mimetype || '';
@@ -218,7 +219,7 @@ const startSocket = async () => {
         await sock.sendMessage(jid, { sticker: { url: buffer }, ...options }, { quoted });
         return buffer;
     };
-    
+
     sock.downloadAndSaveMediaMessage = async (message, filename, attachExtension = true) => {
         let quoted = message.msg ? message.msg : message;
         let mime = (message.msg || message).mimetype || "";
@@ -250,7 +251,7 @@ const startSocket = async () => {
         }
         return { res, filename, ...type, data, deleteFile() { return filename && fs.promises.unlink(filename); } };
     };
-    
+
     sock.sendFile = async (jid, path, filename = '', caption = '', quoted, ptt = false, options = {}) => {
         let type = await sock.getFile(path, true);
         let { res, data: file, filename: pathFile } = type;
