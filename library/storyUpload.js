@@ -1,7 +1,13 @@
 const FileType = require('file-type');
 const { makeLog, secs } = require('./botlog');
 const { postStory, remuxVideo, compressVideo, enhanceVideo, audienceSize } = require('./story');
-const { compressVideoCloud } = require('./cloudinaryCompress');
+let compressVideoCloud = null;
+
+try {
+    ({ compressVideoCloud } = require('./cloudinaryCompress'));
+} catch (err) {
+    console.log('[Story] Cloudinary compression unavailable.');
+}
 const { upscaleVideoCloud } = require('./cloudinaryUpscale');
 
 const IMAGE_OK = ['image/jpeg', 'image/png', 'image/webp'];
